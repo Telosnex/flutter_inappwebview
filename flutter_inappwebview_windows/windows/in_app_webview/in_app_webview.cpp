@@ -740,18 +740,19 @@ namespace flutter_inappwebview_plugin
 
               auto consoleArgs = consoleMessageJson.at("args").get<std::vector<nlohmann::json>>();
               auto message = join(functional_map(consoleArgs, [](const nlohmann::json& json) {
+                // Check the CDP RemoteObject type field first
+                if (json.contains("type") && json.at("type") == "string") {
+                    return json.at("value").get<std::string>();
+                }
+                // Fallback for non-string types
                 if (json.contains("value")) {
-                    return json.at("value").is_string() 
-                        ? json.at("value").get<std::string>() 
-                        : json.at("value").dump();
+                    return json.at("value").dump();
                 }
-                else if (json.contains("description")) {
-                    return json.at("description").is_string() 
-                        ? json.at("description").get<std::string>() 
-                        : json.at("description").dump();
+                if (json.contains("description")) {
+                    return json.at("description").get<std::string>();
                 }
-                return json.is_string() ? json.get<std::string>() : json.dump();
-              }), std::string{ " " });
+                return json.dump();
+            }), std::string{ " " });
               channelDelegate->onConsoleMessage(message, messageLevel);
             }
 

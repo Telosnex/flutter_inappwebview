@@ -40,6 +40,12 @@ class HeadlessInAppWebView {
   void setSize(double width, double height);
   void getSize(double* width, double* height) const;
 
+  // Load the initial content after Dart has received onWebViewCreated and had a
+  // chance to register JavaScript handlers. The underlying InAppWebView normally
+  // loads initial content in its constructor, but headless must attach channels
+  // first or early load/onLoadStop events are lost.
+  void loadInitialContent(const InAppWebViewCreationParams& webviewParams);
+
   // Get the channel delegate
   HeadlessWebViewChannelDelegate* channelDelegate() const { return channelDelegate_.get(); }
 

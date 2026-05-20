@@ -1,6 +1,7 @@
 #include "headless_in_app_webview_manager.h"
 
 #include <cstring>
+#include <cstdio>
 
 #include "../flutter_inappwebview_linux_plugin_private.h"
 #include "../plugin_instance.h"
@@ -11,6 +12,30 @@
 #include "../webview_environment.h"
 
 namespace flutter_inappwebview_plugin {
+
+namespace {
+
+struct DeferredHeadlessLoad {
+  HeadlessInAppWebViewManager* manager;
+  std::string id;
+  InAppWebViewCreationParams webviewParams;
+};
+
+gboolean LoadInitialHeadlessContentOnIdle(gpointer data) {
+  std::unique_ptr<DeferredHeadlessLoad> deferred(static_cast<DeferredHeadlessLoad*>(data));
+  std::fprintf(stderr, "[flutter_inappwebview_linux] HeadlessInAppWebViewManager idle load start id=%s\n", deferred->id.c_str());
+  if (deferred->manager != nullptr) {
+    auto* webview = deferred->manager->GetHeadlessWebView(deferred->id);
+    if (webview != nullptr) {
+      webview->loadInitialContent(deferred->webviewParams);
+    } else {
+      std::fprintf(stderr, "[flutter_inappwebview_linux] HeadlessInAppWebViewManager idle load skipped: webview missing id=%s\n", deferred->id.c_str());
+    }
+  }
+  return G_SOURCE_REMOVE;
+}
+
+}  // namespace
 
 HeadlessInAppWebViewManager::HeadlessInAppWebViewManager(PluginInstance* plugin)
     : plugin_(plugin), registrar_(plugin->registrar()) {
@@ -79,6 +104,7 @@ void HeadlessInAppWebViewManager::HandleMethodCallImpl(FlMethodCall* method_call
 }
 
 void HeadlessInAppWebViewManager::Run(FlMethodCall* method_call) {
+  std::fprintf(stderr, "[flutter_inappwebview_linux] HeadlessInAppWebViewManager::Run start\n");
   FlValue* args = fl_method_call_get_args(method_call);
 
   if (fl_value_get_type(args) != FL_VALUE_TYPE_MAP) {
@@ -95,6 +121,7 @@ void HeadlessInAppWebViewManager::Run(FlMethodCall* method_call) {
     return;
   }
   std::string id = idOpt.value();
+  std::fprintf(stderr, "[flutter_inappwebview_linux] HeadlessInAppWebViewManager::Run id=%s\n", id.c_str());
 
   // Get the params map
   FlValue* params = get_fl_map_value_raw(args, "params");
@@ -172,19 +199,28 @@ void HeadlessInAppWebViewManager::Run(FlMethodCall* method_call) {
     }
   }
 
-  // Create the headless webview
+  // Create the headless webview. It intentionally defers initial content load
+  // until after channels are attached and Dart receives onWebViewCreated.
+  std::fprintf(stderr, "[flutter_inappwebview_linux] HeadlessInAppWebViewManager::Run creating webview id=%s\n", id.c_str());
   auto headlessWebView =
       std::make_unique<HeadlessInAppWebView>(this, headlessParams, webviewParams);
 
   // Store it
   webviews_[id] = std::move(headlessWebView);
+  std::fprintf(stderr, "[flutter_inappwebview_linux] HeadlessInAppWebViewManager::Run stored webview id=%s\n", id.c_str());
 
-  // Notify Flutter that the webview is created
+  // Notify Flutter that the webview is created. Initial content loading is
+  // scheduled on the next main-loop turn so Dart can run onWebViewCreated and
+  // register JavaScript handlers before any load/onLoadStop events fire.
   webviews_[id]->channelDelegate()->onWebViewCreated();
+
+  auto* deferredLoad = new DeferredHeadlessLoad{this, id, webviewParams};
+  g_idle_add(LoadInitialHeadlessContentOnIdle, deferredLoad);
 
   // Return success
   g_autoptr(FlValue) result = make_fl_value(true);
   fl_method_call_respond_success(method_call, result, nullptr);
+  std::fprintf(stderr, "[flutter_inappwebview_linux] HeadlessInAppWebViewManager::Run responded success id=%s\n", id.c_str());
 }
 
 }  // namespace flutter_inappwebview_plugin

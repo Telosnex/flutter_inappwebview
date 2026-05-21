@@ -35,6 +35,28 @@ gboolean LoadInitialHeadlessContentOnIdle(gpointer data) {
   return G_SOURCE_REMOVE;
 }
 
+struct DeferredHeadlessCreated {
+  HeadlessInAppWebViewManager* manager;
+  std::string id;
+  InAppWebViewCreationParams webviewParams;
+};
+
+gboolean NotifyHeadlessCreatedOnIdle(gpointer data) {
+  std::unique_ptr<DeferredHeadlessCreated> deferred(static_cast<DeferredHeadlessCreated*>(data));
+  std::fprintf(stderr, "[flutter_inappwebview_linux] HeadlessInAppWebViewManager idle onWebViewCreated start id=%s\n", deferred->id.c_str());
+  if (deferred->manager != nullptr) {
+    auto* webview = deferred->manager->GetHeadlessWebView(deferred->id);
+    if (webview != nullptr && webview->channelDelegate() != nullptr) {
+      webview->channelDelegate()->onWebViewCreated();
+      auto* deferredLoad = new DeferredHeadlessLoad{deferred->manager, deferred->id, deferred->webviewParams};
+      g_idle_add(LoadInitialHeadlessContentOnIdle, deferredLoad);
+    } else {
+      std::fprintf(stderr, "[flutter_inappwebview_linux] HeadlessInAppWebViewManager idle onWebViewCreated skipped: webview missing id=%s\n", deferred->id.c_str());
+    }
+  }
+  return G_SOURCE_REMOVE;
+}
+
 }  // namespace
 
 HeadlessInAppWebViewManager::HeadlessInAppWebViewManager(PluginInstance* plugin)
@@ -209,18 +231,17 @@ void HeadlessInAppWebViewManager::Run(FlMethodCall* method_call) {
   webviews_[id] = std::move(headlessWebView);
   std::fprintf(stderr, "[flutter_inappwebview_linux] HeadlessInAppWebViewManager::Run stored webview id=%s\n", id.c_str());
 
-  // Notify Flutter that the webview is created. Initial content loading is
-  // scheduled on the next main-loop turn so Dart can run onWebViewCreated and
-  // register JavaScript handlers before any load/onLoadStop events fire.
-  webviews_[id]->channelDelegate()->onWebViewCreated();
-
-  auto* deferredLoad = new DeferredHeadlessLoad{this, id, webviewParams};
-  g_idle_add(LoadInitialHeadlessContentOnIdle, deferredLoad);
-
-  // Return success
+  // Return success before invoking Dart callbacks. Calling back into Dart from
+  // inside the shared-channel run handler can leave the original invokeMethod
+  // future unresolved on Linux, so schedule onWebViewCreated for the next
+  // main-loop turn. Initial content loading is scheduled after that callback so
+  // Dart can register JavaScript handlers before load/onLoadStop events fire.
   g_autoptr(FlValue) result = make_fl_value(true);
   fl_method_call_respond_success(method_call, result, nullptr);
   std::fprintf(stderr, "[flutter_inappwebview_linux] HeadlessInAppWebViewManager::Run responded success id=%s\n", id.c_str());
+
+  auto* deferredCreated = new DeferredHeadlessCreated{this, id, webviewParams};
+  g_idle_add(NotifyHeadlessCreatedOnIdle, deferredCreated);
 }
 
 }  // namespace flutter_inappwebview_plugin

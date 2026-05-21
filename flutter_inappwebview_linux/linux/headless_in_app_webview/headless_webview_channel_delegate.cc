@@ -25,10 +25,14 @@ void HeadlessWebViewChannelDelegate::HandleMethodCall(FlMethodCall* method_call)
   const gchar* method = fl_method_call_get_name(method_call);
 
   if (strcmp(method, "dispose") == 0) {
-    if (headlessWebView_ != nullptr) {
-      headlessWebView_->dispose();
+    auto* headlessWebView = headlessWebView_;
+    if (headlessWebView != nullptr) {
+      // Respond before disposing. dispose() removes the owner from the manager
+      // and destroys this delegate, so no member access is safe afterwards.
+      headlessWebView_ = nullptr;
       g_autoptr(FlValue) result = fl_value_new_bool(true);
       fl_method_call_respond_success(method_call, result, nullptr);
+      headlessWebView->dispose();
     } else {
       g_autoptr(FlValue) result = fl_value_new_bool(false);
       fl_method_call_respond_success(method_call, result, nullptr);

@@ -637,6 +637,9 @@ class InAppWebView {
   // Download signal handler ID
   gulong download_started_handler_id_ = 0;
 
+  // Frame-displayed callback ID returned by WebKit (not a GSignal handler)
+  guint frame_displayed_callback_id_ = 0;
+
   // Context menu state
   std::unique_ptr<ContextMenuPopup> context_menu_popup_;
   WebKitContextMenu* pending_context_menu_ = nullptr;
@@ -657,6 +660,7 @@ class InAppWebView {
   void InitWpeBackend();
   void InitWebView(const InAppWebViewCreationParams& params);
   void RegisterEventHandlers();
+  void DisconnectEventHandlers();
   void PrepareAndAddUserScripts();  // Add plugin scripts based on settings
   void SetupMonitorChangeHandlers();
   void CleanupMonitorChangeHandlers();
@@ -716,6 +720,8 @@ class InAppWebView {
   void ReadPixelsFromEglImage(void* egl_image, uint32_t width, uint32_t height);
 
   // === WebKit signals (same as WebKitGTK) ===
+  static bool ShouldIgnoreCallback(InAppWebView* self);
+
   static void OnLoadChanged(WebKitWebView* web_view, WebKitLoadEvent load_event,
                             gpointer user_data);
 

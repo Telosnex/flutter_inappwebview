@@ -358,7 +358,13 @@ void InAppWebView::AttachChannel(FlBinaryMessenger* messenger, const std::string
 InAppWebView::~InAppWebView() {
   debugLog("dealloc InAppWebView");
 
+  // Stop Dart/native callbacks before any cleanup below can trigger WebKit
+  // progress/load notifications. WebKit signals carry this object as raw
+  // user_data, so leaving them connected during destruction can call back into
+  // a freed InAppWebView/WebViewChannelDelegate.
+  is_disposing_.store(true);
   CleanupMonitorChangeHandlers();
+  DisconnectEventHandlers();
 
   context_menu_popup_.reset();
 
@@ -737,7 +743,9 @@ void InAppWebView::InitWebView(const InAppWebViewCreationParams& params) {
   buffer_rendered_handler_ = g_signal_connect(wpe_view_, "buffer-rendered",
       G_CALLBACK(+[](WPEView* view, WPEBuffer* buffer, gpointer user_data) {
         auto* self = static_cast<InAppWebView*>(user_data);
-        self->OnWpePlatformBufferRendered(buffer);
+        if (self != nullptr) {
+          self->OnWpePlatformBufferRendered(buffer);
+        }
       }), this);
   
   // Get toplevel for size management (need this before setting scale)
@@ -760,6 +768,9 @@ void InAppWebView::InitWebView(const InAppWebViewCreationParams& params) {
     scale_changed_handler_ = g_signal_connect(gtk_window_, "notify::scale-factor",
         G_CALLBACK(+[](GObject* object, GParamSpec* pspec, gpointer user_data) {
           auto* self = static_cast<InAppWebView*>(user_data);
+          if (ShouldIgnoreCallback(self)) {
+            return;
+          }
           auto* widget = GTK_WIDGET(object);
           int new_scale = gtk_widget_get_scale_factor(widget);
           
@@ -968,13 +979,50 @@ void InAppWebView::RegisterEventHandlers() {
   g_signal_connect(webview_, "notify::microphone-capture-state",
                    G_CALLBACK(OnNotifyMicrophoneCaptureState), this);
 
-  webkit_web_view_add_frame_displayed_callback(
+  frame_displayed_callback_id_ = webkit_web_view_add_frame_displayed_callback(
       webview_,
       [](WebKitWebView*, gpointer data) {
         auto* self = static_cast<InAppWebView*>(data);
+        if (ShouldIgnoreCallback(self)) {
+          return;
+        }
         self->OnFrameDisplayed(data);
       },
       this, nullptr);
+}
+
+void InAppWebView::DisconnectEventHandlers() {
+  if (webview_ != nullptr) {
+    if (frame_displayed_callback_id_ != 0) {
+      webkit_web_view_remove_frame_displayed_callback(webview_, frame_displayed_callback_id_);
+      frame_displayed_callback_id_ = 0;
+    }
+
+    WebKitBackForwardList* back_forward_list = webkit_web_view_get_back_forward_list(webview_);
+    if (back_forward_list != nullptr) {
+      g_signal_handlers_disconnect_by_data(back_forward_list, this);
+    }
+
+    WebKitNetworkSession* network_session = webkit_web_view_get_network_session(webview_);
+    if (network_session != nullptr) {
+      g_signal_handlers_disconnect_by_data(network_session, this);
+    }
+    download_started_handler_id_ = 0;
+
+    g_signal_handlers_disconnect_by_data(webview_, this);
+  }
+
+#ifdef HAVE_WPE_PLATFORM
+  if (wpe_view_ != nullptr) {
+    g_signal_handlers_disconnect_by_data(wpe_view_, this);
+  }
+  buffer_rendered_handler_ = 0;
+
+  if (gtk_window_ != nullptr) {
+    g_signal_handlers_disconnect_by_data(gtk_window_, this);
+  }
+  scale_changed_handler_ = 0;
+#endif
 }
 
 void InAppWebView::PrepareAndAddUserScripts() {
@@ -1108,7 +1156,9 @@ void InAppWebView::SetupMonitorChangeHandlers() {
         display, "monitor-added",
         G_CALLBACK(+[](GdkDisplay*, GdkMonitor*, gpointer user_data) {
           auto* self = static_cast<InAppWebView*>(user_data);
-          self->UpdateMonitorRefreshRate();
+          if (!ShouldIgnoreCallback(self)) {
+            self->UpdateMonitorRefreshRate();
+          }
         }),
         this);
 
@@ -1117,7 +1167,9 @@ void InAppWebView::SetupMonitorChangeHandlers() {
         display, "monitor-removed",
         G_CALLBACK(+[](GdkDisplay*, GdkMonitor*, gpointer user_data) {
           auto* self = static_cast<InAppWebView*>(user_data);
-          self->UpdateMonitorRefreshRate();
+          if (!ShouldIgnoreCallback(self)) {
+            self->UpdateMonitorRefreshRate();
+          }
         }),
         this);
   }
@@ -1129,7 +1181,9 @@ void InAppWebView::SetupMonitorChangeHandlers() {
         gtk_window_, "configure-event",
         G_CALLBACK(+[](GtkWidget*, GdkEventConfigure*, gpointer user_data) -> gboolean {
           auto* self = static_cast<InAppWebView*>(user_data);
-          self->UpdateMonitorRefreshRate();
+          if (!ShouldIgnoreCallback(self)) {
+            self->UpdateMonitorRefreshRate();
+          }
           return FALSE;  // Continue event propagation
         }),
         this);
@@ -1137,14 +1191,16 @@ void InAppWebView::SetupMonitorChangeHandlers() {
 }
 
 void InAppWebView::CleanupMonitorChangeHandlers() {
-  // Disconnect monitors-changed signal
-  if (monitors_changed_handler_id_ != 0) {
-    GdkDisplay* display = gdk_display_get_default();
-    if (display != nullptr) {
+  // Disconnect monitor change signals. monitor-removed is intentionally
+  // disconnected by data because only monitor-added has a stored handler ID.
+  GdkDisplay* display = gdk_display_get_default();
+  if (display != nullptr) {
+    if (monitors_changed_handler_id_ != 0) {
       g_signal_handler_disconnect(display, monitors_changed_handler_id_);
     }
-    monitors_changed_handler_id_ = 0;
+    g_signal_handlers_disconnect_by_data(display, this);
   }
+  monitors_changed_handler_id_ = 0;
 
   // Disconnect configure-event signal
   if (configure_event_handler_id_ != 0 && gtk_window_ != nullptr) {
@@ -1175,6 +1231,9 @@ void InAppWebView::UpdateMonitorRefreshRate() {
 
 void InAppWebView::OnFrameDisplayed(void* data) {
   auto* self = static_cast<InAppWebView*>(data);
+  if (ShouldIgnoreCallback(self)) {
+    return;
+  }
 
   if (self->on_frame_available_) {
     self->on_frame_available_();
@@ -1184,6 +1243,13 @@ void InAppWebView::OnFrameDisplayed(void* data) {
 #ifdef HAVE_WPE_BACKEND_LEGACY
 void InAppWebView::OnExportDmaBuf(::wpe_fdo_egl_exported_image* image) {
   if (image == nullptr) {
+    return;
+  }
+  if (is_disposing_.load()) {
+    if (exportable_ != nullptr) {
+      ::wpe_view_backend_exportable_fdo_egl_dispatch_release_exported_image(exportable_, image);
+      ::wpe_view_backend_exportable_fdo_dispatch_frame_complete(exportable_);
+    }
     return;
   }
 
@@ -3761,9 +3827,16 @@ void InAppWebView::OnShouldOverrideUrlLoadingDecision(int64_t decision_id, bool 
 
 // === WebKit Signal Handlers ===
 
+bool InAppWebView::ShouldIgnoreCallback(InAppWebView* self) {
+  return self == nullptr || self->is_disposing_.load();
+}
+
 void InAppWebView::OnLoadChanged(WebKitWebView* web_view, WebKitLoadEvent load_event,
                                  gpointer user_data) {
   auto* self = static_cast<InAppWebView*>(user_data);
+  if (ShouldIgnoreCallback(self)) {
+    return;
+  }
   
   // Check if WebView is still valid (WebProcess may have crashed)
   if (!WEBKIT_IS_WEB_VIEW(web_view)) {
@@ -3801,6 +3874,9 @@ void InAppWebView::OnLoadChanged(WebKitWebView* web_view, WebKitLoadEvent load_e
 gboolean InAppWebView::OnDecidePolicy(WebKitWebView* web_view, WebKitPolicyDecision* decision,
                                       WebKitPolicyDecisionType decision_type, gpointer user_data) {
   auto* self = static_cast<InAppWebView*>(user_data);
+  if (ShouldIgnoreCallback(self)) {
+    return FALSE;
+  }
 
   // Handle response policy decisions (for onNavigationResponse and downloads)
   if (decision_type == WEBKIT_POLICY_DECISION_TYPE_RESPONSE) {
@@ -3979,6 +4055,9 @@ gboolean InAppWebView::OnDecidePolicy(WebKitWebView* web_view, WebKitPolicyDecis
 void InAppWebView::OnNotifyEstimatedLoadProgress(GObject* object, GParamSpec* pspec,
                                                  gpointer user_data) {
   auto* self = static_cast<InAppWebView*>(user_data);
+  if (ShouldIgnoreCallback(self) || !WEBKIT_IS_WEB_VIEW(object)) {
+    return;
+  }
 
   double progress = webkit_web_view_get_estimated_load_progress(WEBKIT_WEB_VIEW(object));
   int progress_percent = static_cast<int>(progress * 100);
@@ -3996,7 +4075,8 @@ void InAppWebView::OnNotifyEstimatedLoadProgress(GObject* object, GParamSpec* ps
 
 void InAppWebView::OnNotifyTitle(GObject* object, GParamSpec* pspec, gpointer user_data) {
   auto* self = static_cast<InAppWebView*>(user_data);
-  if (self->channel_delegate_ == nullptr)
+  if (ShouldIgnoreCallback(self) || self->channel_delegate_ == nullptr ||
+      !WEBKIT_IS_WEB_VIEW(object))
     return;
 
   const gchar* title = webkit_web_view_get_title(WEBKIT_WEB_VIEW(object));
@@ -4007,7 +4087,8 @@ void InAppWebView::OnNotifyTitle(GObject* object, GParamSpec* pspec, gpointer us
 
 void InAppWebView::OnNotifyUri(GObject* object, GParamSpec* pspec, gpointer user_data) {
   auto* self = static_cast<InAppWebView*>(user_data);
-  if (self->channel_delegate_ == nullptr)
+  if (ShouldIgnoreCallback(self) || self->channel_delegate_ == nullptr ||
+      !WEBKIT_IS_WEB_VIEW(object))
     return;
 
   const gchar* uri = webkit_web_view_get_uri(WEBKIT_WEB_VIEW(object));
@@ -4020,6 +4101,9 @@ void InAppWebView::OnNotifyUri(GObject* object, GParamSpec* pspec, gpointer user
 gboolean InAppWebView::OnLoadFailed(WebKitWebView* web_view, WebKitLoadEvent load_event,
                                     gchar* failing_uri, GError* error, gpointer user_data) {
   auto* self = static_cast<InAppWebView*>(user_data);
+  if (ShouldIgnoreCallback(self)) {
+    return FALSE;
+  }
   
   if (self->channel_delegate_ == nullptr)
     return FALSE;
@@ -4046,6 +4130,9 @@ gboolean InAppWebView::OnLoadFailedWithTlsErrors(WebKitWebView* web_view, gchar*
                                                  GTlsCertificate* certificate,
                                                  GTlsCertificateFlags errors, gpointer user_data) {
   auto* self = static_cast<InAppWebView*>(user_data);
+  if (ShouldIgnoreCallback(self)) {
+    return FALSE;
+  }
 
   if (!self->channel_delegate_) {
     return FALSE;
@@ -4100,6 +4187,9 @@ gboolean InAppWebView::OnLoadFailedWithTlsErrors(WebKitWebView* web_view, gchar*
 
 void InAppWebView::OnCloseRequest(WebKitWebView* web_view, gpointer user_data) {
   auto* self = static_cast<InAppWebView*>(user_data);
+  if (ShouldIgnoreCallback(self)) {
+    return;
+  }
   if (self->channel_delegate_) {
     self->channel_delegate_->onCloseWindow();
   }
@@ -4129,6 +4219,9 @@ WebKitWebView* InAppWebView::OnCreateWebView(WebKitWebView* web_view,
                                              WebKitNavigationAction* navigation_action,
                                              gpointer user_data) {
   auto* self = static_cast<InAppWebView*>(user_data);
+  if (ShouldIgnoreCallback(self)) {
+    return nullptr;
+  }
 
   // Check if JavaScript can open windows automatically
   if (!self->settings_ || !self->settings_->javaScriptCanOpenWindowsAutomatically) {
@@ -4235,6 +4328,9 @@ WebKitWebView* InAppWebView::OnCreateWebView(WebKitWebView* web_view,
 gboolean InAppWebView::OnScriptDialog(WebKitWebView* web_view, WebKitScriptDialog* dialog,
                                       gpointer user_data) {
   auto* self = static_cast<InAppWebView*>(user_data);
+  if (ShouldIgnoreCallback(self)) {
+    return FALSE;
+  }
 
   WebKitScriptDialogType dialogType = webkit_script_dialog_get_dialog_type(dialog);
   const gchar* message = webkit_script_dialog_get_message(dialog);
@@ -4398,6 +4494,10 @@ gboolean InAppWebView::OnScriptDialog(WebKitWebView* web_view, WebKitScriptDialo
 gboolean InAppWebView::OnPermissionRequest(WebKitWebView* web_view,
                                            WebKitPermissionRequest* request, gpointer user_data) {
   auto* self = static_cast<InAppWebView*>(user_data);
+  if (ShouldIgnoreCallback(self)) {
+    webkit_permission_request_deny(request);
+    return TRUE;
+  }
 
   if (!self->channel_delegate_) {
     webkit_permission_request_deny(request);
@@ -4459,6 +4559,10 @@ gboolean InAppWebView::OnPermissionRequest(WebKitWebView* web_view,
 gboolean InAppWebView::OnAuthenticate(WebKitWebView* web_view, WebKitAuthenticationRequest* request,
                                       gpointer user_data) {
   auto* self = static_cast<InAppWebView*>(user_data);
+  if (ShouldIgnoreCallback(self)) {
+    webkit_authentication_request_cancel(request);
+    return TRUE;
+  }
 
   if (!self->channel_delegate_) {
     webkit_authentication_request_cancel(request);
@@ -4724,6 +4828,9 @@ gboolean InAppWebView::OnAuthenticate(WebKitWebView* web_view, WebKitAuthenticat
 gboolean InAppWebView::OnContextMenu(WebKitWebView* web_view, WebKitContextMenu* context_menu,
                                      WebKitHitTestResult* hit_test_result, gpointer user_data) {
   auto* self = static_cast<InAppWebView*>(user_data);
+  if (ShouldIgnoreCallback(self)) {
+    return FALSE;
+  }
 
   // Disable context menu if setting is enabled
   if (self->settings_ && self->settings_->disableContextMenu) {
@@ -4765,6 +4872,9 @@ gboolean InAppWebView::OnContextMenu(WebKitWebView* web_view, WebKitContextMenu*
 
 void InAppWebView::OnContextMenuDismissed(WebKitWebView* web_view, gpointer user_data) {
   auto* self = static_cast<InAppWebView*>(user_data);
+  if (ShouldIgnoreCallback(self)) {
+    return;
+  }
 
   // Hide our custom context menu popup when WebKit signals dismissal
   self->HideContextMenu();
@@ -6573,6 +6683,9 @@ void InAppWebView::createLink(const std::string& linkUri) {
 
 gboolean InAppWebView::OnEnterFullscreen(WebKitWebView* web_view, gpointer user_data) {
   auto* self = static_cast<InAppWebView*>(user_data);
+  if (ShouldIgnoreCallback(self)) {
+    return FALSE;
+  }
   self->is_fullscreen_ = true;
 
   // Notify WPE backend that we entered fullscreen
@@ -6590,6 +6703,9 @@ gboolean InAppWebView::OnEnterFullscreen(WebKitWebView* web_view, gpointer user_
 
 gboolean InAppWebView::OnLeaveFullscreen(WebKitWebView* web_view, gpointer user_data) {
   auto* self = static_cast<InAppWebView*>(user_data);
+  if (ShouldIgnoreCallback(self)) {
+    return FALSE;
+  }
   self->is_fullscreen_ = false;
 
   // Notify WPE backend that we exited fullscreen
@@ -6609,6 +6725,9 @@ void InAppWebView::OnMouseTargetChanged(WebKitWebView* web_view,
                                         WebKitHitTestResult* hit_test_result, guint modifiers,
                                         gpointer user_data) {
   auto* self = static_cast<InAppWebView*>(user_data);
+  if (ShouldIgnoreCallback(self)) {
+    return;
+  }
 
   // Store the hit test result for getHitTestResult()
   // Release previous result and ref new one (if not null)
@@ -6657,6 +6776,9 @@ void InAppWebView::OnWebProcessTerminated(WebKitWebView* web_view,
                                           WebKitWebProcessTerminationReason reason,
                                           gpointer user_data) {
   auto* self = static_cast<InAppWebView*>(user_data);
+  if (ShouldIgnoreCallback(self)) {
+    return;
+  }
 
   // Determine if this was a crash or a kill
   // - WEBKIT_WEB_PROCESS_CRASHED: The web process crashed -> didCrash = true
@@ -6875,6 +6997,10 @@ gboolean InAppWebView::OnRunFileChooser(WebKitWebView* web_view,
                                         WebKitFileChooserRequest* request,
                                         gpointer user_data) {
   auto* self = static_cast<InAppWebView*>(user_data);
+  if (ShouldIgnoreCallback(self)) {
+    webkit_file_chooser_request_cancel(request);
+    return TRUE;
+  }
 
   // Get file chooser properties
   gboolean select_multiple = webkit_file_chooser_request_get_select_multiple(request);
@@ -6943,6 +7069,9 @@ gboolean InAppWebView::OnShowOptionMenu(WebKitWebView* web_view,
                                         WebKitRectangle* rectangle,
                                         gpointer user_data) {
   auto* self = static_cast<InAppWebView*>(user_data);
+  if (ShouldIgnoreCallback(self)) {
+    return FALSE;
+  }
   
   // Hide any existing option menu first
   if (self->option_menu_popup_) {
@@ -7029,7 +7158,7 @@ void InAppWebView::OnBackForwardListChanged(WebKitBackForwardList* list,
                                             gpointer items_removed,
                                             gpointer user_data) {
   auto* self = static_cast<InAppWebView*>(user_data);
-  if (self && self->on_navigation_state_changed_) {
+  if (!ShouldIgnoreCallback(self) && self->on_navigation_state_changed_) {
     self->on_navigation_state_changed_();
   }
 }
@@ -7039,7 +7168,8 @@ void InAppWebView::OnBackForwardListChanged(WebKitBackForwardList* list,
 void InAppWebView::OnNotifyCameraCaptureState(GObject* object, GParamSpec* pspec,
                                                gpointer user_data) {
   auto* self = static_cast<InAppWebView*>(user_data);
-  if (!self || !self->channel_delegate_) {
+  if (ShouldIgnoreCallback(self) || !self->channel_delegate_ ||
+      !WEBKIT_IS_WEB_VIEW(object)) {
     return;
   }
 
@@ -7059,7 +7189,8 @@ void InAppWebView::OnNotifyCameraCaptureState(GObject* object, GParamSpec* pspec
 void InAppWebView::OnNotifyMicrophoneCaptureState(GObject* object, GParamSpec* pspec,
                                                    gpointer user_data) {
   auto* self = static_cast<InAppWebView*>(user_data);
-  if (!self || !self->channel_delegate_) {
+  if (ShouldIgnoreCallback(self) || !self->channel_delegate_ ||
+      !WEBKIT_IS_WEB_VIEW(object)) {
     return;
   }
 
@@ -7082,6 +7213,10 @@ void InAppWebView::OnDownloadStarted(WebKitNetworkSession* network_session,
                                      WebKitDownload* download,
                                      gpointer user_data) {
   auto* self = static_cast<InAppWebView*>(user_data);
+  if (ShouldIgnoreCallback(self)) {
+    webkit_download_cancel(download);
+    return;
+  }
 
   // Check if download callback is enabled via settings
   if (!self->settings_ || !self->settings_->useOnDownloadStart) {
@@ -7776,6 +7911,13 @@ void InAppWebView::initializeWindowIdJS() {
 #ifdef HAVE_WPE_BACKEND_LEGACY
 void InAppWebView::OnExportShmBuffer(struct wpe_fdo_shm_exported_buffer* buffer) {
   if (buffer == nullptr) {
+    return;
+  }
+  if (is_disposing_.load()) {
+    if (exportable_ != nullptr) {
+      wpe_view_backend_exportable_fdo_dispatch_release_shm_exported_buffer(exportable_, buffer);
+      wpe_view_backend_exportable_fdo_dispatch_frame_complete(exportable_);
+    }
     return;
   }
 

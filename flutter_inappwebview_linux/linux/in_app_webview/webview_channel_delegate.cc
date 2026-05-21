@@ -1132,7 +1132,7 @@ void WebViewChannelDelegate::onLoadStop(const std::optional<std::string>& url) c
 }
 
 void WebViewChannelDelegate::onProgressChanged(int64_t progress) const {
-  if (!channel_) {
+  if (!channel_ || webView == nullptr) {
     return;
   }
 

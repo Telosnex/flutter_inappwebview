@@ -36,10 +36,13 @@ jobs:
             libegl-mesa0 xvfb xauth dbus-x11 fonts-dejavu-core
           mkdir -m 700 "$XDG_RUNTIME_DIR"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
-        with:
-          flutter-version: '3.47.1'
-          channel: stable
+      - name: Install pinned Flutter SDK
+        # flutter-action has unpinned nested actions, which the org policy blocks.
+        run: |
+          git clone --depth 1 --branch 3.47.1 https://github.com/flutter/flutter.git /opt/flutter
+          test "$(git -C /opt/flutter rev-parse HEAD)" = 6655482ec06e547f90abf8ae7590466f4415978d
+          echo /opt/flutter/bin >> "$GITHUB_PATH"
+          /opt/flutter/bin/flutter --version
       - name: Resolve dependencies
         working-directory: flutter_inappwebview_linux
         run: flutter pub get

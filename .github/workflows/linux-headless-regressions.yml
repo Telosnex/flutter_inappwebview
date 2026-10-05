@@ -1,0 +1,59 @@
+name: Linux headless regressions
+
+on:
+  pull_request:
+    paths:
+      - 'flutter_inappwebview_linux/**'
+      - '.github/workflows/linux-headless-regressions.yml'
+  push:
+    branches: [master, wpe-desktop-startup]
+    paths:
+      - 'flutter_inappwebview_linux/**'
+      - '.github/workflows/linux-headless-regressions.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  headless:
+    runs-on: ubuntu-24.04
+    container: debian:trixie
+    timeout-minutes: 25
+    env:
+      # The sandbox cannot create its namespaces inside an unprivileged CI
+      # container. These tests load only the inline offline fixtures below.
+      WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS: '1'
+      XDG_RUNTIME_DIR: /tmp/wpe-runtime
+    steps:
+      - name: Install Flutter and WPE build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl git \
+            xz-utils unzip clang cmake ninja-build pkg-config libgtk-3-dev \
+            libsecret-1-dev libepoxy-dev libwpewebkit-2.0-dev \
+            libwpebackend-fdo-1.0-dev libwayland-dev libgl1-mesa-dri \
+            libegl-mesa0 xvfb xauth dbus-x11 fonts-dejavu-core
+          mkdir -m 700 "$XDG_RUNTIME_DIR"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: '3.47.1'
+          channel: stable
+      - name: Resolve dependencies
+        working-directory: flutter_inappwebview_linux
+        run: flutter pub get
+      - name: Lifecycle unit tests
+        working-directory: flutter_inappwebview_linux
+        run: flutter test test/headless_in_app_webview_test.dart --no-pub
+      - name: Analyze changed Dart code
+        working-directory: flutter_inappwebview_linux
+        run: >-
+          dart analyze lib/src/in_app_webview/headless_in_app_webview.dart
+          test/headless_in_app_webview_test.dart
+          example/integration_test/headless_regression_test.dart
+      - name: Native WPE regressions
+        working-directory: flutter_inappwebview_linux/example
+        run: >-
+          dbus-run-session -- xvfb-run -a flutter test
+          integration_test/headless_regression_test.dart -d linux --no-pub

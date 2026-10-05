@@ -260,6 +260,8 @@ class LinuxHeadlessInAppWebView extends PlatformHeadlessInAppWebView
 
   bool _started = false;
   bool _running = false;
+  Future<void>? _runFuture;
+  Future<void>? _disposeFuture;
 
   static const MethodChannel _sharedChannel = const MethodChannel(
     'com.pichillilorenzo/flutter_headless_inappwebview',
@@ -313,7 +315,10 @@ class LinuxHeadlessInAppWebView extends PlatformHeadlessInAppWebView
   Future<dynamic> _handleMethod(MethodCall call) async {
     switch (call.method) {
       case "onWebViewCreated":
-        if (params.onWebViewCreated != null && _webViewController != null) {
+        if (_started &&
+            _disposeFuture == null &&
+            params.onWebViewCreated != null &&
+            _webViewController != null) {
           params.onWebViewCreated!(_controllerFromPlatform);
         }
         break;
@@ -324,45 +329,48 @@ class LinuxHeadlessInAppWebView extends PlatformHeadlessInAppWebView
   }
 
   @override
-  Future<void> run() async {
-    if (_started) {
-      return;
+  Future<void> run() {
+    if (_started || _disposeFuture != null) {
+      return _runFuture ?? Future<void>.value();
     }
     _started = true;
-    _init();
+    return _runFuture = _run();
+  }
 
-    final initialSettings = params.initialSettings ?? InAppWebViewSettings();
-    _inferInitialSettings(initialSettings);
-
-    Map<String, dynamic> settingsMap =
-        (params.initialSettings != null ? initialSettings.toMap() : null) ??
-        // ignore: deprecated_member_use_from_same_package
-        params.initialOptions?.toMap() ??
-        initialSettings.toMap();
-
-    Map<String, dynamic> args = <String, dynamic>{};
-    args.putIfAbsent('id', () => id);
-    args.putIfAbsent(
-      'params',
-      () => <String, dynamic>{
-        'initialUrlRequest': params.initialUrlRequest?.toMap(),
-        'initialFile': params.initialFile,
-        'initialData': params.initialData?.toMap(),
-        'initialSettings': settingsMap,
-        'contextMenu': params.contextMenu?.toMap() ?? {},
-        'windowId': params.windowId,
-        'initialUserScripts':
-            params.initialUserScripts?.map((e) => e.toMap()).toList() ?? [],
-        'initialSize': params.initialSize.toMap(),
-        'webViewEnvironmentId': params.webViewEnvironment?.id,
-      },
-    );
+  Future<void> _run() async {
     try {
+      _init();
+
+      final initialSettings = params.initialSettings ?? InAppWebViewSettings();
+      _inferInitialSettings(initialSettings);
+
+      Map<String, dynamic> settingsMap =
+          (params.initialSettings != null ? initialSettings.toMap() : null) ??
+          // ignore: deprecated_member_use_from_same_package
+          params.initialOptions?.toMap() ??
+          initialSettings.toMap();
+
+      Map<String, dynamic> args = <String, dynamic>{};
+      args.putIfAbsent('id', () => id);
+      args.putIfAbsent(
+        'params',
+        () => <String, dynamic>{
+          'initialUrlRequest': params.initialUrlRequest?.toMap(),
+          'initialFile': params.initialFile,
+          'initialData': params.initialData?.toMap(),
+          'initialSettings': settingsMap,
+          'contextMenu': params.contextMenu?.toMap() ?? {},
+          'windowId': params.windowId,
+          'initialUserScripts':
+              params.initialUserScripts?.map((e) => e.toMap()).toList() ?? [],
+          'initialSize': params.initialSize.toMap(),
+          'webViewEnvironmentId': params.webViewEnvironment?.id,
+        },
+      );
       await _sharedChannel.invokeMethod('run', args);
       _running = true;
-    } catch (e) {
-      _running = false;
-      _started = false;
+    } catch (_) {
+      _disposeControllers();
       rethrow;
     }
   }
@@ -446,19 +454,49 @@ class LinuxHeadlessInAppWebView extends PlatformHeadlessInAppWebView
   }
 
   @override
-  Future<void> dispose() async {
+  Future<void> dispose() {
+    if (_disposeFuture != null) {
+      return _disposeFuture!;
+    }
+    if (!_started) {
+      return Future<void>.value();
+    }
+    return _disposeFuture = _dispose().whenComplete(() {
+      _disposeFuture = null;
+    });
+  }
+
+  Future<void> _dispose() async {
+    // Native creation can finish after dispose was requested. Wait for its
+    // reply so that the newly created view is removed, not left alive.
+    try {
+      await _runFuture;
+    } catch (_) {
+      // _run has released the Dart channels. The run caller keeps the error.
+      return;
+    }
     if (!_running) {
       return;
     }
     Map<String, dynamic> args = <String, dynamic>{};
     await channel?.invokeMethod('dispose', args);
-    disposeChannel();
+    _disposeControllers();
+  }
+
+  void _disposeControllers() {
+    if (!disposed) {
+      disposeChannel();
+    }
     _started = false;
     _running = false;
+    _runFuture = null;
     _webViewController?.dispose();
     _webViewController = null;
     _controllerFromPlatform = null;
-    _linuxParams.findInteractionController?.dispose();
+    final findController = _linuxParams.findInteractionController;
+    if (findController != null && !findController.disposed) {
+      findController.dispose();
+    }
   }
 }
 

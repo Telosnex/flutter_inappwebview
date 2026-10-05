@@ -7,6 +7,7 @@
 #include "../plugin_instance.h"
 #include "../in_app_webview/in_app_webview_settings.h"
 #include "../types/url_request.h"
+#include "../types/user_script.h"
 #include "../utils/flutter.h"
 #include "../utils/log.h"
 #include "../webview_environment.h"
@@ -197,6 +198,19 @@ void HeadlessInAppWebViewManager::Run(FlMethodCall* method_call) {
     webviewParams.initialDataBaseUrl = get_fl_map_value<std::string>(initial_data, "baseUrl", "");
     webviewParams.initialDataMimeType = get_fl_map_value<std::string>(initial_data, "mimeType", "");
     webviewParams.initialDataEncoding = get_fl_map_value<std::string>(initial_data, "encoding", "");
+  }
+
+  // Install user scripts before the deferred initial content load, as for
+  // visible webviews. Document-start scripts must run before page scripts.
+  FlValue* initial_user_scripts = get_fl_map_value_raw(params, "initialUserScripts");
+  if (initial_user_scripts != nullptr && fl_value_get_type(initial_user_scripts) == FL_VALUE_TYPE_LIST) {
+    size_t count = fl_value_get_length(initial_user_scripts);
+    for (size_t i = 0; i < count; i++) {
+      FlValue* script_value = fl_value_get_list_value(initial_user_scripts, i);
+      if (script_value != nullptr && fl_value_get_type(script_value) == FL_VALUE_TYPE_MAP) {
+        webviewParams.initialUserScripts.push_back(std::make_shared<UserScript>(script_value));
+      }
+    }
   }
 
   // Parse initial file

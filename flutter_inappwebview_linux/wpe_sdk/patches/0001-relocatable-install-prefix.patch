@@ -1,0 +1,192 @@
+diff --git a/Source/WebKit/PlatformWPE.cmake b/Source/WebKit/PlatformWPE.cmake
+index 7ca61370..1ff4f58e 100644
+--- a/Source/WebKit/PlatformWPE.cmake
++++ b/Source/WebKit/PlatformWPE.cmake
+@@ -50,6 +50,8 @@ if (EXISTS "${TOOLS_DIR}/glib/apply-build-revision-to-files.py")
+ endif ()
+ 
+ add_definitions(-DLIBDIR="${LIB_INSTALL_DIR}")
++# Telosnex: resolve install paths relative to the loaded library.
++add_definitions(-DWEBKIT_INSTALL_PREFIX="${CMAKE_INSTALL_PREFIX}")
+ add_definitions(-DPKGLIBDIR="${LIB_INSTALL_DIR}/wpe-webkit-${WPE_API_VERSION}")
+ add_definitions(-DPKGLIBEXECDIR="${LIBEXEC_INSTALL_DIR}")
+ add_definitions(-DDATADIR="${CMAKE_INSTALL_FULL_DATADIR}")
+diff --git a/Source/WebKit/Shared/ProcessExecutablePath.h b/Source/WebKit/Shared/ProcessExecutablePath.h
+index aa4e1894..62a56f79 100644
+--- a/Source/WebKit/Shared/ProcessExecutablePath.h
++++ b/Source/WebKit/Shared/ProcessExecutablePath.h
+@@ -23,12 +23,18 @@
+  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+  */
+ 
++#include <wtf/text/CString.h>
+ #include <wtf/text/WTFString.h>
+ 
+ #pragma once
+ 
+ namespace WebKit {
+ 
++// Returns |path| with the build-time install prefix replaced by the prefix
++// of the loaded WebKit library. Returns |path| unchanged if it is not under
++// the build-time prefix or if the library location is not known.
++CString relocatedInstallPath(const char* path);
++
+ String executablePathOfWebProcess();
+ String executablePathOfNetworkProcess();
+ #if ENABLE(GPU_PROCESS)
+diff --git a/Source/WebKit/Shared/glib/ProcessExecutablePathGLib.cpp b/Source/WebKit/Shared/glib/ProcessExecutablePathGLib.cpp
+index 64bcde96..02df2a1a 100644
+--- a/Source/WebKit/Shared/glib/ProcessExecutablePathGLib.cpp
++++ b/Source/WebKit/Shared/glib/ProcessExecutablePathGLib.cpp
+@@ -27,11 +27,61 @@
+ #include "config.h"
+ #include "ProcessExecutablePath.h"
+ 
++#include <dlfcn.h>
+ #include <glib.h>
++#include <limits.h>
++#include <stdlib.h>
++#include <string.h>
++#include <wtf/NeverDestroyed.h>
++#include <wtf/glib/GUniquePtr.h>
+ #include <wtf/FileSystem.h>
+ 
+ namespace WebKit {
+ 
++#if defined(WEBKIT_INSTALL_PREFIX)
++static CString runtimeInstallPrefix()
++{
++    static constexpr const char* buildPrefix = WEBKIT_INSTALL_PREFIX;
++    static constexpr const char* buildLibDir = LIBDIR;
++    size_t prefixLength = strlen(buildPrefix);
++    if (strncmp(buildLibDir, buildPrefix, prefixLength) || buildLibDir[prefixLength] != '/')
++        return { };
++    // The library directory below the prefix, for example "lib".
++    const char* relativeLibDir = buildLibDir + prefixLength + 1;
++
++    Dl_info info;
++    if (!dladdr(reinterpret_cast<void*>(&relocatedInstallPath), &info) || !info.dli_fname)
++        return { };
++    char resolved[PATH_MAX];
++    if (!realpath(info.dli_fname, resolved))
++        return { };
++    GUniquePtr<char> libraryDir(g_path_get_dirname(resolved));
++    size_t libraryDirLength = strlen(libraryDir.get());
++    size_t relativeLength = strlen(relativeLibDir);
++    if (libraryDirLength <= relativeLength + 1)
++        return { };
++    const char* suffix = libraryDir.get() + libraryDirLength - relativeLength;
++    if (strcmp(suffix, relativeLibDir) || suffix[-1] != '/')
++        return { };
++    return CString(std::span<const char>(libraryDir.get(), libraryDirLength - relativeLength - 1));
++}
++#endif
++
++CString relocatedInstallPath(const char* path)
++{
++#if defined(WEBKIT_INSTALL_PREFIX)
++    static NeverDestroyed<CString> prefix = runtimeInstallPrefix();
++    static constexpr const char* buildPrefix = WEBKIT_INSTALL_PREFIX;
++    size_t prefixLength = strlen(buildPrefix);
++    if (prefix->isNull() || strncmp(path, buildPrefix, prefixLength) || (path[prefixLength] && path[prefixLength] != '/'))
++        return path;
++    GUniquePtr<char> relocated(g_strconcat(prefix->data(), path + prefixLength, nullptr));
++    return relocated.get();
++#else
++    return path;
++#endif
++}
++
+ #if ENABLE(DEVELOPER_MODE)
+ static String getExecutablePath()
+ {
+@@ -60,7 +110,7 @@ static String findWebKitProcess(const ASCIILiteral processName)
+     }
+ #endif
+ 
+-    return FileSystem::pathByAppendingComponent(FileSystem::stringFromFileSystemRepresentation(PKGLIBEXECDIR), processName);
++    return FileSystem::pathByAppendingComponent(FileSystem::stringFromFileSystemRepresentation(relocatedInstallPath(PKGLIBEXECDIR).data()), processName);
+ }
+ 
+ String executablePathOfWebProcess()
+diff --git a/Source/WebKit/UIProcess/API/glib/WebKitWebContext.cpp b/Source/WebKit/UIProcess/API/glib/WebKitWebContext.cpp
+index 549ee896..e100b35a 100644
+--- a/Source/WebKit/UIProcess/API/glib/WebKitWebContext.cpp
++++ b/Source/WebKit/UIProcess/API/glib/WebKitWebContext.cpp
+@@ -46,6 +46,7 @@
+ #include "WebKitURISchemeRequestPrivate.h"
+ #include "WebKitUserMessagePrivate.h"
+ #include "WebKitWebContextPrivate.h"
++#include "ProcessExecutablePath.h"
+ #include "WebKitWebViewPrivate.h"
+ #include "WebKitWebsiteDataManagerPrivate.h"
+ #include "WebKitWebsitePoliciesPrivate.h"
+@@ -346,8 +347,8 @@ static const char* injectedBundleDirectory()
+     if (bundleDirectory && g_file_test(bundleDirectory, G_FILE_TEST_IS_DIR))
+         return bundleDirectory;
+ 
+-    static const char* injectedBundlePath = PKGLIBDIR G_DIR_SEPARATOR_S "injected-bundle" G_DIR_SEPARATOR_S;
+-    return injectedBundlePath;
++    static NeverDestroyed<CString> injectedBundlePath = relocatedInstallPath(PKGLIBDIR G_DIR_SEPARATOR_S "injected-bundle" G_DIR_SEPARATOR_S);
++    return injectedBundlePath->data();
+ }
+ 
+ static void webkitWebContextGetProperty(GObject* object, guint propID, GValue* value, GParamSpec* paramSpec)
+@@ -512,7 +513,8 @@ static void webkit_web_context_class_init(WebKitWebContextClass* webContextClass
+ 
+     GObjectClass* gObjectClass = G_OBJECT_CLASS(webContextClass);
+ 
+-    bindtextdomain(GETTEXT_PACKAGE, LOCALEDIR);
++    static NeverDestroyed<CString> localeDir = relocatedInstallPath(LOCALEDIR);
++    bindtextdomain(GETTEXT_PACKAGE, localeDir->data());
+     bind_textdomain_codeset(GETTEXT_PACKAGE, "UTF-8");
+ 
+     s_serviceWorkerNotificationProvider = makeUnique<WebKitNotificationProvider>(&WebNotificationManagerProxy::serviceWorkerManagerSingleton(), nullptr);
+diff --git a/Source/WebKit/UIProcess/Launcher/glib/BubblewrapLauncher.cpp b/Source/WebKit/UIProcess/Launcher/glib/BubblewrapLauncher.cpp
+index b77a76a4..24b691ea 100644
+--- a/Source/WebKit/UIProcess/Launcher/glib/BubblewrapLauncher.cpp
++++ b/Source/WebKit/UIProcess/Launcher/glib/BubblewrapLauncher.cpp
+@@ -20,6 +20,7 @@
+ 
+ #if ENABLE(BUBBLEWRAP_SANDBOX)
+ 
++#include "ProcessExecutablePath.h"
+ #include "XDGDBusProxy.h"
+ #include <fcntl.h>
+ #include <glib.h>
+@@ -799,6 +800,9 @@ GRefPtr<GSubprocess> bubblewrapSpawn(GSubprocessLauncher* launcher, const Proces
+         return adoptGRef(g_subprocess_launcher_spawnv(launcher, argv.span().data(), error));
+ 
+     const char* runDir = g_get_user_runtime_dir();
++    CString dataDir = relocatedInstallPath(DATADIR);
++    CString libDir = relocatedInstallPath(LIBDIR);
++    CString libexecDir = relocatedInstallPath(PKGLIBEXECDIR);
+     Vector<CString> sandboxArgs = {
+         "--unshare-uts",
+ 
+@@ -821,14 +825,14 @@ GRefPtr<GSubprocess> bubblewrapSpawn(GSubprocessLauncher* launcher, const Proces
+ 
+         "--ro-bind-try", "/usr/share", "/usr/share",
+         "--ro-bind-try", "/usr/local/share", "/usr/local/share",
+-        "--ro-bind-try", DATADIR, DATADIR,
++        "--ro-bind-try", dataDir, dataDir,
+ 
+         // We only grant access to the libdirs webkit is built with and
+         // guess system libdirs. This will always have some edge cases.
+         "--ro-bind-try", "/lib", "/lib",
+         "--ro-bind-try", "/usr/lib", "/usr/lib",
+         "--ro-bind-try", "/usr/local/lib", "/usr/local/lib",
+-        "--ro-bind-try", LIBDIR, LIBDIR,
++        "--ro-bind-try", libDir, libDir,
+ #if defined(WEBKIT_SWIFT_STDLIB_LIBRARY_PATH)
+         "--ro-bind-try", WEBKIT_SWIFT_STDLIB_LIBRARY_PATH, WEBKIT_SWIFT_STDLIB_LIBRARY_PATH,
+ #endif
+@@ -842,7 +846,7 @@ GRefPtr<GSubprocess> bubblewrapSpawn(GSubprocessLauncher* launcher, const Proces
+         "--ro-bind-try", "/usr/local/lib32", "/usr/local/lib32",
+ #endif
+ 
+-        "--ro-bind-try", PKGLIBEXECDIR, PKGLIBEXECDIR,
++        "--ro-bind-try", libexecDir, libexecDir,
+     };
+ 
+     if (enableDebugPermissions()) {

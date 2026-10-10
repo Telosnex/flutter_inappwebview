@@ -26,7 +26,9 @@ set(NLOHMANN_JSON_VERSION "3.11.3")
 #   - WPEPlatform API (wpe-platform-2.0): NEW default API for WPE WebKit 2.40+
 #   - WPEBackend-FDO (wpebackend-fdo-1.0): Legacy fallback for older systems
 #
-# Required packages:
+# By default the build downloads a pinned, relocatable WPE WebKit SDK and
+# bundles it with the app. See wpe_sdk.cmake for the options. With
+# FLUTTER_INAPPWEBVIEW_WPE_SDK=system, the build uses system packages:
 #   - wpe-webkit-2.0 (or wpe-webkit-1.1 on older systems)
 #   - wpe-platform-2.0 (preferred) OR wpebackend-fdo-1.0 (fallback)
 #   - libwpe-1.0
@@ -34,6 +36,7 @@ set(NLOHMANN_JSON_VERSION "3.11.3")
 # See WPE_BACKEND.md for installation instructions.
 
 find_package(PkgConfig REQUIRED)
+include("${CMAKE_CURRENT_SOURCE_DIR}/wpe_sdk.cmake")
 
 # Always require epoxy for OpenGL support
 pkg_check_modules(EPOXY REQUIRED IMPORTED_TARGET epoxy)
@@ -293,77 +296,106 @@ if(HAVE_WPE_FDO)
 endif()
 
 # === Library Bundling ===
-# Collect WPE libraries to bundle with the application
-# This ensures the app can run without setting LD_LIBRARY_PATH
-
-set(WPE_BUNDLED_LIBS "")
-
-# Helper function to find and add real shared library files (resolving symlinks)
-function(find_and_add_library LIB_NAME SEARCH_PATHS OUT_LIST)
-  foreach(SEARCH_PATH ${SEARCH_PATHS})
-    # Look for the versioned .so file (e.g., libwpe-1.0.so.1.10.0)
-    file(GLOB LIB_FILES "${SEARCH_PATH}/${LIB_NAME}.so.*.*.*")
-    if(NOT LIB_FILES)
-      # Try less specific pattern (e.g., libwpe-1.0.so.1)
-      file(GLOB LIB_FILES "${SEARCH_PATH}/${LIB_NAME}.so.*")
-    endif()
-    if(LIB_FILES)
-      # Get the first matching file
-      list(GET LIB_FILES 0 LIB_FILE)
-      # Resolve symlinks to get the real file
-      get_filename_component(REAL_LIB "${LIB_FILE}" REALPATH)
-      if(EXISTS "${REAL_LIB}")
-        list(APPEND ${OUT_LIST} "${REAL_LIB}")
-        set(${OUT_LIST} ${${OUT_LIST}} PARENT_SCOPE)
-        message(STATUS "flutter_inappwebview_linux: Will bundle ${REAL_LIB}")
-        return()
-      endif()
-    endif()
+if(WPE_SDK_DIR)
+  # Bundle the SDK runtime in the app bundle with the SDK layout. The
+  # relocation patch of the SDK finds the helper processes and the injected
+  # bundle relative to lib/libWPEWebKit-2.0.so.1:
+  #   lib/lib*.so.<major>         Libraries, under their sonames
+  #   lib/wpe-webkit-2.0/         Injected bundle
+  #   libexec/wpe-webkit-2.0/     WPEWebProcess, WPENetworkProcess, ...
+  #   share/wpe-webkit-2.0/       Inspector resources
+  file(GLOB _wpe_sonames "${WPE_SDK_DIR}/lib/lib*.so.[0-9]")
+  foreach(_soname_path IN LISTS _wpe_sonames)
+    get_filename_component(_soname "${_soname_path}" NAME)
+    get_filename_component(_real "${_soname_path}" REALPATH)
+    install(FILES "${_real}" DESTINATION lib RENAME "${_soname}" COMPONENT Runtime)
+    message(STATUS "flutter_inappwebview_linux: Will bundle ${_soname}")
   endforeach()
-  message(WARNING "flutter_inappwebview_linux: Could not find ${LIB_NAME} to bundle")
-endfunction()
+  install(DIRECTORY "${WPE_SDK_DIR}/lib/wpe-webkit-2.0" DESTINATION lib
+    USE_SOURCE_PERMISSIONS COMPONENT Runtime)
+  install(DIRECTORY "${WPE_SDK_DIR}/libexec/wpe-webkit-2.0" DESTINATION libexec
+    USE_SOURCE_PERMISSIONS COMPONENT Runtime)
+  if(EXISTS "${WPE_SDK_DIR}/share/wpe-webkit-2.0")
+    install(DIRECTORY "${WPE_SDK_DIR}/share/wpe-webkit-2.0" DESTINATION share
+      COMPONENT Runtime)
+  endif()
+  install(DIRECTORY "${WPE_SDK_DIR}/share/licenses/" DESTINATION share/licenses/wpe-sdk
+    COMPONENT Runtime)
+  set(flutter_inappwebview_linux_bundled_libraries "" PARENT_SCOPE)
+else()
+  # Collect WPE libraries to bundle with the application
+  # This ensures the app can run without setting LD_LIBRARY_PATH
 
-# Get library directories from pkg-config
-set(WPE_LIB_DIRS "")
-if(WPE_WEBKIT_LIBRARY_DIRS)
-  list(APPEND WPE_LIB_DIRS ${WPE_WEBKIT_LIBRARY_DIRS})
+  set(WPE_BUNDLED_LIBS "")
+
+  # Helper function to find and add real shared library files (resolving symlinks)
+  function(find_and_add_library LIB_NAME SEARCH_PATHS OUT_LIST)
+    foreach(SEARCH_PATH ${SEARCH_PATHS})
+      # Look for the versioned .so file (e.g., libwpe-1.0.so.1.10.0)
+      file(GLOB LIB_FILES "${SEARCH_PATH}/${LIB_NAME}.so.*.*.*")
+      if(NOT LIB_FILES)
+        # Try less specific pattern (e.g., libwpe-1.0.so.1)
+        file(GLOB LIB_FILES "${SEARCH_PATH}/${LIB_NAME}.so.*")
+      endif()
+      if(LIB_FILES)
+        # Get the first matching file
+        list(GET LIB_FILES 0 LIB_FILE)
+        # Resolve symlinks to get the real file
+        get_filename_component(REAL_LIB "${LIB_FILE}" REALPATH)
+        if(EXISTS "${REAL_LIB}")
+          list(APPEND ${OUT_LIST} "${REAL_LIB}")
+          set(${OUT_LIST} ${${OUT_LIST}} PARENT_SCOPE)
+          message(STATUS "flutter_inappwebview_linux: Will bundle ${REAL_LIB}")
+          return()
+        endif()
+      endif()
+    endforeach()
+    message(WARNING "flutter_inappwebview_linux: Could not find ${LIB_NAME} to bundle")
+  endfunction()
+
+  # Get library directories from pkg-config
+  set(WPE_LIB_DIRS "")
+  if(WPE_WEBKIT_LIBRARY_DIRS)
+    list(APPEND WPE_LIB_DIRS ${WPE_WEBKIT_LIBRARY_DIRS})
+  endif()
+  if(LIBWPE_LIBRARY_DIRS)
+    list(APPEND WPE_LIB_DIRS ${LIBWPE_LIBRARY_DIRS})
+  endif()
+  if(HAVE_WPE_FDO AND WPE_FDO_LIBRARY_DIRS)
+    list(APPEND WPE_LIB_DIRS ${WPE_FDO_LIBRARY_DIRS})
+  endif()
+  # Add common paths as fallback
+  list(APPEND WPE_LIB_DIRS
+    "/usr/local/lib"
+    "/usr/local/lib/${CMAKE_LIBRARY_ARCHITECTURE}"
+    "/usr/lib"
+    "/usr/lib/${CMAKE_LIBRARY_ARCHITECTURE}"
+  )
+  list(REMOVE_DUPLICATES WPE_LIB_DIRS)
+
+  # Find WPE WebKit library
+  find_and_add_library("libWPEWebKit-2.0" "${WPE_LIB_DIRS}" WPE_BUNDLED_LIBS)
+
+  # Find libwpe library
+  find_and_add_library("libwpe-1.0" "${WPE_LIB_DIRS}" WPE_BUNDLED_LIBS)
+
+  # WPEPlatform is built into libWPEWebKit-2.0 on modern builds, so there are
+  # no separate libWPEPlatform*.so files to bundle.
+
+  # Find WPE Backend FDO library (legacy fallback)
+  if(HAVE_WPE_FDO)
+    find_and_add_library("libWPEBackend-fdo-1.0" "${WPE_LIB_DIRS}" WPE_BUNDLED_LIBS)
+  endif()
+
+  # Also need to create symlinks for the sonames that the libraries expect
+  # This will be handled at install time in the example CMakeLists.txt
+
+  set(flutter_inappwebview_linux_bundled_libraries
+    ${WPE_BUNDLED_LIBS}
+    PARENT_SCOPE
+  )
+
 endif()
-if(LIBWPE_LIBRARY_DIRS)
-  list(APPEND WPE_LIB_DIRS ${LIBWPE_LIBRARY_DIRS})
-endif()
-if(HAVE_WPE_FDO AND WPE_FDO_LIBRARY_DIRS)
-  list(APPEND WPE_LIB_DIRS ${WPE_FDO_LIBRARY_DIRS})
-endif()
-# Add common paths as fallback
-list(APPEND WPE_LIB_DIRS 
-  "/usr/local/lib"
-  "/usr/local/lib/${CMAKE_LIBRARY_ARCHITECTURE}"
-  "/usr/lib"
-  "/usr/lib/${CMAKE_LIBRARY_ARCHITECTURE}"
-)
-list(REMOVE_DUPLICATES WPE_LIB_DIRS)
-
-# Find WPE WebKit library
-find_and_add_library("libWPEWebKit-2.0" "${WPE_LIB_DIRS}" WPE_BUNDLED_LIBS)
-
-# Find libwpe library  
-find_and_add_library("libwpe-1.0" "${WPE_LIB_DIRS}" WPE_BUNDLED_LIBS)
-
-# WPEPlatform is built into libWPEWebKit-2.0 on modern builds, so there are
-# no separate libWPEPlatform*.so files to bundle.
-
-# Find WPE Backend FDO library (legacy fallback)
-if(HAVE_WPE_FDO)
-  find_and_add_library("libWPEBackend-fdo-1.0" "${WPE_LIB_DIRS}" WPE_BUNDLED_LIBS)
-endif()
-
-# Also need to create symlinks for the sonames that the libraries expect
-# This will be handled at install time in the example CMakeLists.txt
-
-set(flutter_inappwebview_linux_bundled_libraries
-  ${WPE_BUNDLED_LIBS}
-  PARENT_SCOPE
-)
 
 # Export library info for downstream use
 set(FLUTTER_INAPPWEBVIEW_WPE_LIBS ${WPE_BUNDLED_LIBS} CACHE INTERNAL "WPE libraries to bundle")

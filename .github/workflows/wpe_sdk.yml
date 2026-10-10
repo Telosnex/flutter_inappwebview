@@ -1,0 +1,149 @@
+# Builds the relocatable WPE WebKit SDK (flutter_inappwebview_linux/wpe_sdk)
+# and publishes it as an immutable GitHub release, wpe-sdk-<key>. Start it
+# with
+#   git push -f origin HEAD:wpe-sdk-release       (release)
+#   git push -f origin HEAD:wpe-sdk-release-dry   (build only, no upload)
+# or with workflow_dispatch. On success it pushes the branch
+# wpe-sdk-manifest/<tag> with wpe_sdk/prebuilt.json. Merge that branch to
+# use the release.
+name: WPE SDK
+run-name: WPE SDK / ${{ (github.ref_name == 'wpe-sdk-release-dry' || inputs.dry_run) && 'build only' || 'publish' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build only, upload nothing.
+        type: boolean
+        default: false
+  push:
+    branches: [wpe-sdk-release, wpe-sdk-release-dry]
+
+concurrency:
+  group: wpe-sdk
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    # A WebKit build takes 2-4 hours on a 4-core hosted runner.
+    timeout-minutes: 360
+    container:
+      image: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: ubuntu-24.04-x64
+            runner: ubuntu-24.04
+            image: ubuntu@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+          - target: ubuntu-24.04-arm64
+            runner: ubuntu-24.04-arm
+            image: ubuntu@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+          - target: debian-13-arm64
+            runner: ubuntu-24.04-arm
+            image: debian@sha256:913f6706df59a68922d1dd08f78c2476560a8d367897200a6005b00e5f67c2d5
+    steps:
+      - name: Install git
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends ca-certificates git > /dev/null
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Install build dependencies
+        run: flutter_inappwebview_linux/wpe_sdk/install_build_deps.sh
+      - name: Build
+        env:
+          WPE_SDK_WORK: ${{ runner.temp }}/work
+        run: |
+          flutter_inappwebview_linux/wpe_sdk/key.sh > "$RUNNER_TEMP/key.txt"
+          flutter_inappwebview_linux/wpe_sdk/build.sh "$RUNNER_TEMP/out"
+          test -f "$RUNNER_TEMP/out/wpe-sdk-${{ matrix.target }}.tar.zst"
+          cp "$RUNNER_TEMP/key.txt" "$RUNNER_TEMP/out/wpe-sdk-${{ matrix.target }}.key"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wpe-sdk-${{ matrix.target }}
+          path: ${{ runner.temp }}/out/
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      DRY_RUN: ${{ github.ref_name == 'wpe-sdk-release-dry' || inputs.dry_run == true }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: wpe-sdk-*
+          path: ${{ runner.temp }}/out
+          merge-multiple: true
+      - name: Check keys and targets
+        run: |
+          key="$(flutter_inappwebview_linux/wpe_sdk/key.sh)"
+          echo "KEY=$key" >> "$GITHUB_ENV"
+          echo "TAG=wpe-sdk-${key:0:16}" >> "$GITHUB_ENV"
+          for target in ubuntu-24.04-x64 ubuntu-24.04-arm64 debian-13-arm64; do
+            test "$(cat "$RUNNER_TEMP/out/wpe-sdk-$target.key")" = "$key"
+            test -f "$RUNNER_TEMP/out/wpe-sdk-$target.tar.zst"
+            echo "$(jq -r .sha256 "$RUNNER_TEMP/out/wpe-sdk-$target.json")  $RUNNER_TEMP/out/wpe-sdk-$target.tar.zst" | sha256sum -c -
+          done
+      - name: Write the manifest
+        run: |
+          jq -n --arg key "$KEY" --arg tag "$TAG" --arg repo "$GITHUB_REPOSITORY" \
+            --slurpfile targets <(jq -s . "$RUNNER_TEMP"/out/wpe-sdk-*.json) '
+            {schema: 1, key: $key, tag: $tag,
+             targets: ($targets[0] | map({key: .target, value: (. + {
+               url: "https://github.com/\($repo)/releases/download/\($tag)/\(.archive)"
+             })}) | from_entries)}' > flutter_inappwebview_linux/wpe_sdk/prebuilt.json
+          cat flutter_inappwebview_linux/wpe_sdk/prebuilt.json
+      - name: Publish the release
+        if: env.DRY_RUN != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "::error::Release $TAG exists. Releases are immutable."
+            exit 1
+          fi
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft \
+            --title "WPE WebKit SDK $TAG" \
+            --notes "Built from ${{ github.sha }}. SDK key $KEY." \
+            "$RUNNER_TEMP"/out/wpe-sdk-*.tar.zst "$RUNNER_TEMP"/out/wpe-sdk-*.json
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+      - name: Push the manifest branch
+        if: env.DRY_RUN != 'true'
+        run: |
+          branch="wpe-sdk-manifest/$TAG"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add flutter_inappwebview_linux/wpe_sdk/prebuilt.json
+          git commit -m "wpe_sdk: manifest of release $TAG"
+          git push origin "$branch"
+          {
+            echo "Release: https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG"
+            echo
+            echo "Merge branch \`$branch\` to use it."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wpe-sdk-manifest
+          path: flutter_inappwebview_linux/wpe_sdk/prebuilt.json

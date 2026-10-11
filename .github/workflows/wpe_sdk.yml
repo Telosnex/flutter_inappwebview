@@ -71,6 +71,14 @@ jobs:
           flutter_inappwebview_linux/wpe_sdk/build.sh "$RUNNER_TEMP/out"
           test -f "$RUNNER_TEMP/out/wpe-sdk-${{ matrix.target }}.tar.zst"
           cp "$RUNNER_TEMP/key.txt" "$RUNNER_TEMP/out/wpe-sdk-${{ matrix.target }}.key"
+      - name: Test the SDK from another directory
+        # Extracts the archive to a new directory, loads a page, and checks
+        # that WebKit started its helpers from that directory. Container
+        # jobs cannot create the bubblewrap sandbox; the sandbox is checked
+        # on the target systems.
+        env:
+          WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS: "1"
+        run: flutter_inappwebview_linux/wpe_sdk/test/run_relocation_test.sh "$RUNNER_TEMP/out/wpe-sdk-${{ matrix.target }}.tar.zst"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wpe-sdk-${{ matrix.target }}

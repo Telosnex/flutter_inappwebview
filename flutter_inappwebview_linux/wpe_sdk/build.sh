@@ -109,10 +109,10 @@ cmake -S "$webkit" -B "$webkit/build" -G Ninja \
   -DENABLE_GAMEPAD=OFF \
   -DENABLE_JOURNALD_LOG=OFF \
   -DENABLE_WPE_QT_API=OFF \
-  -DUSE_JPEGXL=OFF \
-  -DUSE_AVIF=OFF \
-  -DUSE_WOFF2=OFF \
-  -DUSE_LCMS=OFF \
+  -DUSE_JPEGXL=ON \
+  -DUSE_AVIF=ON \
+  -DUSE_WOFF2=ON \
+  -DUSE_LCMS=ON \
   -DUSE_ATK=OFF \
   -DUSE_LIBBACKTRACE=OFF \
   -DUSE_SYSPROF_CAPTURE=OFF \
@@ -167,6 +167,29 @@ for helper in WPEWebProcess WPENetworkProcess; do
   test -x "$prefix/libexec/wpe-webkit-2.0/$helper"
 done
 
+# The OS packages that the SDK needs at run time: the packages that own every
+# library outside the SDK that its ELF files load, plus the modules that
+# WebKit loads by name (GStreamer plugins, the GIO TLS module) and the
+# sandbox helpers. Snap and Pi packaging install this list.
+runtime_packages="$prefix/share/wpe-sdk/runtime-packages.txt"
+mkdir -p "$(dirname "$runtime_packages")"
+{
+  while IFS= read -r -d '' file; do
+    if file -b "$file" | grep -q '^ELF'; then
+      LD_LIBRARY_PATH="$prefix/lib" ldd "$file" | awk '$2 == "=>" && $3 ~ /^\// {print $3}'
+    fi
+  done < <(find "$prefix/lib" "$prefix/libexec" -type f -print0) |
+    grep -v "^$prefix/" | sort -u | while IFS= read -r library; do
+      owner="$(dpkg -S "$library" 2>/dev/null || dpkg -S "$(realpath "$library")" 2>/dev/null ||
+        dpkg -S "/usr$library" 2>/dev/null || true)"
+      [ -n "$owner" ] || { echo "No package owns $library" >&2; exit 1; }
+      echo "${owner%%:*}"
+    done
+  printf '%s\n' bubblewrap xdg-dbus-proxy glib-networking \
+    gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-gl
+} | sort -u > "$runtime_packages"
+test -s "$runtime_packages"
+
 # Archive with fixed metadata, so the same files give the same bytes.
 stage="$work/stage"
 rm -rf "$stage"
@@ -187,7 +210,8 @@ cat > "$out/wpe-sdk-$target.json" <<JSON
   "wpebackendFdo": "$WPEBACKEND_FDO_VERSION",
   "wpewebkit": "$WPEWEBKIT_VERSION",
   "compiler": "$(cc --version | head -1)",
-  "glibc": "$(ldd --version | head -1 | awk '{print $NF}')"
+  "glibc": "$(ldd --version | head -1 | awk '{print $NF}')",
+  "runtimePackages": [$(sed 's/.*/"&"/' "$runtime_packages" | paste -sd, -)]
 }
 JSON
 cat "$out/wpe-sdk-$target.json"

@@ -6,7 +6,7 @@ on:
       - 'flutter_inappwebview_linux/**'
       - '.github/workflows/linux-headless-regressions.yml'
   push:
-    branches: [master, wpe-desktop-startup]
+    branches: [master, wpe-desktop-startup, wpe-sdk]
     paths:
       - 'flutter_inappwebview_linux/**'
       - '.github/workflows/linux-headless-regressions.yml'
@@ -25,6 +25,9 @@ jobs:
       # container. These tests load only the inline offline fixtures below.
       WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS: '1'
       XDG_RUNTIME_DIR: /tmp/wpe-runtime
+      # This job tests against Debian's packaged WebKit. The pinned SDK has
+      # no debian-13-x64 target.
+      FLUTTER_INAPPWEBVIEW_WPE_SDK: system
     steps:
       - name: Install Flutter and WPE build dependencies
         run: |

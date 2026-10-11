@@ -321,6 +321,12 @@ if(WPE_SDK_DIR)
   endif()
   install(DIRECTORY "${WPE_SDK_DIR}/share/licenses/" DESTINATION share/licenses/wpe-sdk
     COMPONENT Runtime)
+  # The OS packages that the bundled SDK loads, for app packaging (for
+  # example Snap stage-packages).
+  if(EXISTS "${WPE_SDK_DIR}/share/wpe-sdk/runtime-packages.txt")
+    install(FILES "${WPE_SDK_DIR}/share/wpe-sdk/runtime-packages.txt"
+      DESTINATION share/wpe-sdk COMPONENT Runtime)
+  endif()
   set(flutter_inappwebview_linux_bundled_libraries "" PARENT_SCOPE)
 else()
   # Collect WPE libraries to bundle with the application

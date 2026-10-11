@@ -127,5 +127,31 @@ else()
   message(STATUS "flutter_inappwebview_linux: WPE SDK: ${_wpe_target} ${_wpe_sha256}")
 endif()
 
+# Linking against WebKit needs the OS packages that the SDK loads. Report
+# missing ones by name instead of as undefined references.
+set(_wpe_runtime_packages "${WPE_SDK_DIR}/share/wpe-sdk/runtime-packages.txt")
+find_program(_wpe_dpkg_query dpkg-query)
+if(EXISTS "${_wpe_runtime_packages}" AND _wpe_dpkg_query)
+  file(STRINGS "${_wpe_runtime_packages}" _wpe_packages)
+  execute_process(
+    COMMAND ${_wpe_dpkg_query} -W "-f=\${Package} \${db:Status-Status}\n" ${_wpe_packages}
+    OUTPUT_VARIABLE _wpe_package_status
+    ERROR_QUIET)
+  set(_wpe_package_status "\n${_wpe_package_status}")
+  set(_wpe_missing_packages "")
+  foreach(_wpe_package IN LISTS _wpe_packages)
+    string(FIND "${_wpe_package_status}" "\n${_wpe_package} installed\n" _wpe_found)
+    if(_wpe_found EQUAL -1)
+      list(APPEND _wpe_missing_packages "${_wpe_package}")
+    endif()
+  endforeach()
+  if(_wpe_missing_packages)
+    list(JOIN _wpe_missing_packages " " _wpe_missing_packages)
+    message(FATAL_ERROR
+      "The WPE SDK needs these OS packages:\n"
+      "  sudo apt-get install --no-install-recommends ${_wpe_missing_packages}")
+  endif()
+endif()
+
 _wpe_sdk_reset_checks("${WPE_SDK_DIR}")
 set(ENV{PKG_CONFIG_PATH} "${WPE_SDK_DIR}/lib/pkgconfig:$ENV{PKG_CONFIG_PATH}")

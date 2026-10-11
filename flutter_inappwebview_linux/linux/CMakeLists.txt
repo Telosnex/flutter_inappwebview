@@ -297,6 +297,13 @@ endif()
 
 # === Library Bundling ===
 if(WPE_SDK_DIR)
+  # The plugin links the SDK libraries privately. A target that links the
+  # plugin (the app executable) makes the linker load the plugin's needed
+  # libraries to check symbols, and the SDK is not on its default search
+  # path. -rpath-link affects only this link check; the runtime search path
+  # stays $ORIGIN.
+  target_link_options(${PLUGIN_NAME} INTERFACE
+    "LINKER:-rpath-link,${WPE_SDK_DIR}/lib")
   # Bundle the SDK runtime in the app bundle with the SDK layout. The
   # relocation patch of the SDK finds the helper processes and the injected
   # bundle relative to lib/libWPEWebKit-2.0.so.1:

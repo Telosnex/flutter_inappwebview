@@ -1,6 +1,46 @@
 {
   "schema": 1,
-  "key": null,
-  "tag": null,
-  "targets": {}
+  "key": "c63310dc39ef8651ffb9d75bc9a27a948d1e3616c13a07ad1373a879fa39f865",
+  "tag": "wpe-sdk-c63310dc39ef8651",
+  "targets": {
+    "debian-13-arm64": {
+      "target": "debian-13-arm64",
+      "archive": "wpe-sdk-debian-13-arm64.tar.zst",
+      "sha256": "05d9c492a0fd61798c4b8b4bd1f100f3208f5e7fb87a7cbffd72d390a4c83541",
+      "bytes": 45879099,
+      "buildPrefix": "/opt/wpe-sdk",
+      "libwpe": "1.16.3",
+      "wpebackendFdo": "1.16.1",
+      "wpewebkit": "2.54.1",
+      "compiler": "cc (Debian 14.2.0-19) 14.2.0",
+      "glibc": "2.41",
+      "url": "https://github.com/Telosnex/flutter_inappwebview/releases/download/wpe-sdk-c63310dc39ef8651/wpe-sdk-debian-13-arm64.tar.zst"
+    },
+    "ubuntu-24.04-arm64": {
+      "target": "ubuntu-24.04-arm64",
+      "archive": "wpe-sdk-ubuntu-24.04-arm64.tar.zst",
+      "sha256": "7fc889c4def63a35e09cc74d61e635c8a621ae0f78eaeb7625babfc882ebadf6",
+      "bytes": 46295093,
+      "buildPrefix": "/opt/wpe-sdk",
+      "libwpe": "1.16.3",
+      "wpebackendFdo": "1.16.1",
+      "wpewebkit": "2.54.1",
+      "compiler": "cc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+      "glibc": "2.39",
+      "url": "https://github.com/Telosnex/flutter_inappwebview/releases/download/wpe-sdk-c63310dc39ef8651/wpe-sdk-ubuntu-24.04-arm64.tar.zst"
+    },
+    "ubuntu-24.04-x64": {
+      "target": "ubuntu-24.04-x64",
+      "archive": "wpe-sdk-ubuntu-24.04-x64.tar.zst",
+      "sha256": "1b6b71d269d41e0fe5b6792731fa5ccb5ca238e3ff6dc5d0722f6ee27d854aed",
+      "bytes": 46623004,
+      "buildPrefix": "/opt/wpe-sdk",
+      "libwpe": "1.16.3",
+      "wpebackendFdo": "1.16.1",
+      "wpewebkit": "2.54.1",
+      "compiler": "cc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+      "glibc": "2.39",
+      "url": "https://github.com/Telosnex/flutter_inappwebview/releases/download/wpe-sdk-c63310dc39ef8651/wpe-sdk-ubuntu-24.04-x64.tar.zst"
+    }
+  }
 }

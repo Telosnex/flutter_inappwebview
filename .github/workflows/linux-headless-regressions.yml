@@ -6,7 +6,7 @@ on:
       - 'flutter_inappwebview_linux/**'
       - '.github/workflows/linux-headless-regressions.yml'
   push:
-    branches: [master, wpe-desktop-startup, wpe-sdk]
+    branches: [master]
     paths:
       - 'flutter_inappwebview_linux/**'
       - '.github/workflows/linux-headless-regressions.yml'

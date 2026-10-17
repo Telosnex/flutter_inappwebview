@@ -42,12 +42,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: ubuntu-24.04-x64
+          - target: ubuntu-26.04-x64
             runner: ubuntu-24.04
-            image: ubuntu@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
-          - target: ubuntu-24.04-arm64
+            image: ubuntu@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944
+          - target: ubuntu-26.04-arm64
             runner: ubuntu-24.04-arm
-            image: ubuntu@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+            image: ubuntu@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944
           - target: debian-13-arm64
             runner: ubuntu-24.04-arm
             image: debian@sha256:913f6706df59a68922d1dd08f78c2476560a8d367897200a6005b00e5f67c2d5
@@ -108,7 +108,7 @@ jobs:
           key="$(flutter_inappwebview_linux/wpe_sdk/key.sh)"
           echo "KEY=$key" >> "$GITHUB_ENV"
           echo "TAG=wpe-sdk-${key:0:16}" >> "$GITHUB_ENV"
-          for target in ubuntu-24.04-x64 ubuntu-24.04-arm64 debian-13-arm64; do
+          for target in ubuntu-26.04-x64 ubuntu-26.04-arm64 debian-13-arm64; do
             test "$(cat "$RUNNER_TEMP/out/wpe-sdk-$target.key")" = "$key"
             test -f "$RUNNER_TEMP/out/wpe-sdk-$target.tar.zst"
             echo "$(jq -r .sha256 "$RUNNER_TEMP/out/wpe-sdk-$target.json")  $RUNNER_TEMP/out/wpe-sdk-$target.tar.zst" | sha256sum -c -

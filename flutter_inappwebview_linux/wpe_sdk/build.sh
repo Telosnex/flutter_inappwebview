@@ -4,7 +4,7 @@
 #   build.sh <output-directory>
 #
 # Output: wpe-sdk-<target>.tar.zst and wpe-sdk-<target>.json, where <target>
-# is <os>-<os version>-<arch>, for example ubuntu-24.04-x64. The archive has
+# is <os>-<os version>-<arch>, for example ubuntu-26.04-x64. The archive has
 # one top-level directory, wpe-sdk/. The SDK runs from any directory:
 #  - patches/0001 makes WebKit find its helper processes, injected bundle,
 #    locale data, and sandbox paths relative to libWPEWebKit-2.0.so.

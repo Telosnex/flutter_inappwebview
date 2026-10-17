@@ -9,7 +9,7 @@
 #               The app then needs the same packages at run time.
 #
 # FLUTTER_INAPPWEBVIEW_WPE_SDK_TARGET selects the SDK target, for example
-# ubuntu-24.04-x64. Default: <os-release ID>-<VERSION_ID>-<arch> of the
+# ubuntu-26.04-x64. Default: <os-release ID>-<VERSION_ID>-<arch> of the
 # build machine. An SDK runs on its own base system and on newer versions of
 # it.
 #

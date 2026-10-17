@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Installs the packages that build.sh needs, as root. Supported bases:
-# Ubuntu 24.04 and Debian 13 (trixie). The list is the Debian wpewebkit
+# Ubuntu 26.04 and Debian 13 (trixie). The list is the Debian wpewebkit
 # Build-Depends, without the features that build.sh turns off, plus the
 # tools that build libwpe, WPEBackend-fdo, and the archive.
 set -euo pipefail

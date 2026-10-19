@@ -1003,10 +1003,17 @@ document.addEventListener('keydown', e => window.__keys.push((e.ctrlKey ? 'C-' :
     });
     final origin = 'http://[::1]:${s.port}';
     final got = <String>[];
-    // Wait for the first page: a listener added while it is still loading
-    // can miss the next document (a separate WebKit race).
-    final t = await TestView.start(tester);
+    // The listener is added while the first page still loads (N2).
+    final t = await TestView.start(tester, waitForLoad: false);
     try {
+      await waitFor(tester, () {
+        try {
+          t.controller;
+          return true;
+        } catch (_) {
+          return false;
+        }
+      }, reason: 'controller');
       await t.controller.addWebMessageListener(
         LinuxWebMessageListener(
           LinuxWebMessageListenerCreationParams(
@@ -1033,6 +1040,61 @@ document.addEventListener('keydown', e => window.__keys.push((e.ctrlKey ? 'C-' :
     } finally {
       await t.dispose();
       await s.close(force: true);
+    }
+  });
+
+  // N2. A loadUrl while the current page still loads: WebKit reports the
+  // old page's load-finished after the view URI is already the new URL, so
+  // onLoadStop names a document that has not loaded.
+  testWidgets('N2 onLoadStop reports the document that finished', (
+    tester,
+  ) async {
+    await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+    final server = await LocalServer.start();
+    addTearDown(server.close);
+    final slowRequested = Completer<void>();
+    server.handlers['/first'] = (r, _) {
+      r.response
+        ..headers.contentType = ContentType.html
+        ..write('<!doctype html><title>first</title><img src="/slow.png">');
+    };
+    server.handlers['/slow.png'] = (r, _) async {
+      if (!slowRequested.isCompleted) slowRequested.complete();
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+    };
+    server.handlers['/second'] = (r, _) async {
+      await Future<void>.delayed(const Duration(milliseconds: 3000));
+      r.response
+        ..headers.contentType = ContentType.html
+        ..write('<!doctype html><title>second</title>');
+    };
+    final t = await TestView.start(
+      tester,
+      url: server.url('/first'),
+      waitForLoad: false,
+    );
+    try {
+      await waitFor(
+        tester,
+        () => slowRequested.isCompleted,
+        reason: 'first page parsed',
+      );
+      await t.controller.loadUrl(
+        urlRequest: URLRequest(url: WebUri(server.url('/second'))),
+      );
+      await waitFor(
+        tester,
+        () => t.loadStops.any((u) => u != null && u.endsWith('/second')),
+        reason: 'second page load',
+        timeout: const Duration(seconds: 15),
+      );
+      expect(
+        await t.js('location.pathname'),
+        '/second',
+        reason: 'load stops: ${t.loadStops}',
+      );
+    } finally {
+      await t.dispose();
     }
   });
 

@@ -95,11 +95,16 @@ window.)JS" +
    * events (console, dialogs, cursor, ...) with a second secret. Page JS
    * cannot call it: its name is a random global lexical binding, which is
    * not a window property and cannot be enumerated.
+   *
+   * With [originCheck], the function is undefined where the check is false,
+   * and plugin scripts use their no-op fallback.
    */
   static std::string INTERNAL_CALL_JS_SOURCE(const std::string& functionName,
                                              const std::string& bridgeSecret,
-                                             const std::string& internalSecret) {
-    return "const " + functionName + R"JS( = (function(window) {
+                                             const std::string& internalSecret,
+                                             const std::optional<std::string>& originCheck) {
+    std::string guard = originCheck.has_value() ? "!" + originCheck.value() + " ? undefined : " : "";
+    return "const " + functionName + " = " + guard + R"JS((function(window) {
   try {
     var stringify = window.JSON.stringify;
     var slice = window.Array.prototype.slice;

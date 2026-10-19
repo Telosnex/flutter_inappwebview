@@ -11,6 +11,7 @@
 #include <nlohmann/json.hpp>
 
 #include "../utils/log.h"
+#include "../utils/origin.h"
 
 namespace flutter_inappwebview_plugin {
 
@@ -66,12 +67,7 @@ void UserContentController::addUserScript(std::shared_ptr<UserScript> userScript
     document_end_scripts_.push_back(userScript);
   }
 
-  // Create and add WebKit user script
-  WebKitUserScript* wkScript = createWebKitUserScript(userScript);
-  if (wkScript != nullptr) {
-    webkit_user_content_manager_add_script(content_manager_, wkScript);
-    webkit_user_script_unref(wkScript);
-  }
+  addWebKitScript(*userScript);
 }
 
 void UserContentController::removeUserScriptAt(size_t index,
@@ -111,24 +107,7 @@ void UserContentController::removeAllUserScripts() {
 
     // Re-add plugin scripts (they should persist)
     for (const auto& pluginScript : plugin_scripts_) {
-      WebKitUserScriptInjectionTime webkitTime =
-          pluginScript->injectionTime == UserScriptInjectionTime::atDocumentStart
-              ? WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START
-              : WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_END;
-
-      WebKitUserContentInjectedFrames frames = pluginScript->forMainFrameOnly
-                                                   ? WEBKIT_USER_CONTENT_INJECT_TOP_FRAME
-                                                   : WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES;
-
-      WebKitUserScript* wkScript =
-          webkit_user_script_new(pluginScript->source.c_str(), frames, webkitTime,
-                                 nullptr,  // allow_list
-                                 nullptr   // block_list
-          );
-      if (wkScript != nullptr) {
-        webkit_user_content_manager_add_script(content_manager_, wkScript);
-        webkit_user_script_unref(wkScript);
-      }
+      addWebKitScript(*pluginScript);
     }
   }
 }
@@ -227,21 +206,7 @@ void UserContentController::addPluginScript(std::unique_ptr<PluginScript> plugin
     registerScriptMessageHandlerWithReply(handlerName);
   }
 
-  // Create a UserScript from the PluginScript
-  // Constructor: groupName, source, injectionTime, forMainFrameOnly, allowedOriginRules,
-  // contentWorld
-  auto userScript = std::make_shared<UserScript>(
-      pluginScript->groupName, pluginScript->source, pluginScript->injectionTime,
-      pluginScript->forMainFrameOnly, pluginScript->allowedOriginRules,
-      nullptr  // contentWorld
-  );
-
-  // Add the script
-  WebKitUserScript* wkScript = createWebKitUserScript(userScript);
-  if (wkScript != nullptr) {
-    webkit_user_content_manager_add_script(content_manager_, wkScript);
-    webkit_user_script_unref(wkScript);
-  }
+  addWebKitScript(*pluginScript);
 
   plugin_scripts_.push_back(std::move(pluginScript));
 }
@@ -305,25 +270,38 @@ void UserContentController::onScriptMessageReceived(WebKitUserContentManager* ma
   }
 }
 
-WebKitUserScript* UserContentController::createWebKitUserScript(
-    const std::shared_ptr<UserScript>& userScript) const {
-  if (userScript == nullptr) {
-    return nullptr;
-  }
-
+WebKitUserScript* UserContentController::createWebKitUserScript(const UserScript& userScript) const {
   WebKitUserScriptInjectionTime webkitTime =
-      userScript->injectionTime == UserScriptInjectionTime::atDocumentStart
+      userScript.injectionTime == UserScriptInjectionTime::atDocumentStart
           ? WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START
           : WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_END;
 
-  WebKitUserContentInjectedFrames frames = userScript->forMainFrameOnly
+  WebKitUserContentInjectedFrames frames = userScript.forMainFrameOnly
                                                ? WEBKIT_USER_CONTENT_INJECT_TOP_FRAME
                                                : WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES;
 
-  return webkit_user_script_new(userScript->source.c_str(), frames, webkitTime,
+  // allowedOriginRules (N1). WebKit's allow list matches URL patterns and
+  // ignores ports, so the check is in JS, as on iOS, macOS and Windows.
+  std::optional<std::string> originCheck = OriginCheckJs(userScript.allowedOriginRules);
+  if (originCheck == "false") {
+    return nullptr;
+  }
+  std::string source = originCheck.has_value()
+                           ? "if (" + originCheck.value() + ") {\n" + userScript.source + "\n}"
+                           : userScript.source;
+
+  return webkit_user_script_new(source.c_str(), frames, webkitTime,
                                 nullptr,  // allow_list
                                 nullptr   // block_list
   );
+}
+
+void UserContentController::addWebKitScript(const UserScript& userScript) {
+  WebKitUserScript* wkScript = createWebKitUserScript(userScript);
+  if (wkScript != nullptr) {
+    webkit_user_content_manager_add_script(content_manager_, wkScript);
+    webkit_user_script_unref(wkScript);
+  }
 }
 
 void UserContentController::rebuildScripts() {
@@ -336,40 +314,13 @@ void UserContentController::rebuildScripts() {
 
   // Re-add plugin scripts first (they take priority)
   for (const auto& pluginScript : plugin_scripts_) {
-    WebKitUserScriptInjectionTime webkitTime =
-        pluginScript->injectionTime == UserScriptInjectionTime::atDocumentStart
-            ? WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START
-            : WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_END;
-
-    WebKitUserContentInjectedFrames frames = pluginScript->forMainFrameOnly
-                                                 ? WEBKIT_USER_CONTENT_INJECT_TOP_FRAME
-                                                 : WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES;
-
-    WebKitUserScript* wkScript =
-        webkit_user_script_new(pluginScript->source.c_str(), frames, webkitTime,
-                               nullptr,  // allow_list
-                               nullptr   // block_list
-        );
-    if (wkScript != nullptr) {
-      webkit_user_content_manager_add_script(content_manager_, wkScript);
-      webkit_user_script_unref(wkScript);
-    }
+    addWebKitScript(*pluginScript);
   }
-
-  // Re-add user scripts
   for (const auto& script : document_start_scripts_) {
-    WebKitUserScript* wkScript = createWebKitUserScript(script);
-    if (wkScript != nullptr) {
-      webkit_user_content_manager_add_script(content_manager_, wkScript);
-      webkit_user_script_unref(wkScript);
-    }
+    addWebKitScript(*script);
   }
   for (const auto& script : document_end_scripts_) {
-    WebKitUserScript* wkScript = createWebKitUserScript(script);
-    if (wkScript != nullptr) {
-      webkit_user_content_manager_add_script(content_manager_, wkScript);
-      webkit_user_script_unref(wkScript);
-    }
+    addWebKitScript(*script);
   }
 }
 

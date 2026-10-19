@@ -125,6 +125,123 @@ void main() {
     }
   });
 
+  // N1. Origin allow lists of scripts are enforced: the bridge, plugin
+  // scripts and user scripts run only on allowed origins.
+  Future<dynamic> probeAt(
+    WidgetTester tester,
+    String baseUrl,
+    InAppWebViewSettings settings,
+    String expression,
+  ) async {
+    final t = await TestView.start(
+      tester,
+      baseUrl: baseUrl,
+      settings: settings,
+    );
+    try {
+      return await t.js(expression);
+    } finally {
+      await t.dispose();
+    }
+  }
+
+  const bridgeType = 'typeof window.flutter_inappwebview';
+
+  testWidgets('N1a-control bridge runs on an allowed origin', (tester) async {
+    await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+    final settings = InAppWebViewSettings(
+      javaScriptBridgeOriginAllowList: {'https://example.com'},
+    );
+    expect(
+      await probeAt(tester, 'https://example.com/', settings, bridgeType),
+      'object',
+    );
+  });
+
+  testWidgets('N1a bridge allow list keeps the bridge off other origins', (
+    tester,
+  ) async {
+    await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+    final settings = InAppWebViewSettings(
+      javaScriptBridgeOriginAllowList: {'https://example.com'},
+    );
+    for (final url in [
+      'https://example.com.evil.test/',
+      'https://example.com:8443/',
+      'http://example.com/',
+    ]) {
+      expect(await probeAt(tester, url, settings, bridgeType), 'undefined');
+    }
+  });
+
+  testWidgets('N1b plugin scripts allow list applies to all plugin scripts', (
+    tester,
+  ) async {
+    await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+    final settings = InAppWebViewSettings(
+      pluginScriptsOriginAllowList: {'https://example.com'},
+    );
+    // The bridge falls back to this list; console.log stays native.
+    expect(
+      await probeAt(
+        tester,
+        'https://evil.test/',
+        settings,
+        "$bridgeType + ' ' + /\\[native code\\]/.test(String(console.log))",
+      ),
+      'undefined true',
+    );
+  });
+
+  testWidgets('N1c an empty bridge allow list turns the bridge off', (
+    tester,
+  ) async {
+    await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+    final settings = InAppWebViewSettings(javaScriptBridgeOriginAllowList: {});
+    expect(
+      await probeAt(tester, 'https://example.com/', settings, bridgeType),
+      'undefined',
+    );
+  });
+
+  testWidgets('N1d user script allowedOriginRules are enforced', (
+    tester,
+  ) async {
+    await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+    final t = await TestView.start(tester);
+    try {
+      await t.controller.addUserScript(
+        userScript: UserScript(
+          source: 'window.__n1 = (window.__n1 || 0) + 1;',
+          injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+          allowedOriginRules: {'https://example.com'},
+        ),
+      );
+      final results = <String, dynamic>{};
+      for (final url in [
+        'https://example.com:8443/',
+        'https://example.com.evil.test/',
+        'https://example.com/',
+      ]) {
+        final stops = t.loadStops.length;
+        await t.controller.loadData(data: plainPage, baseUrl: WebUri(url));
+        await waitFor(
+          tester,
+          () => t.loadStops.length > stops,
+          reason: 'load $url',
+        );
+        results[url] = await t.js('String(window.__n1)');
+      }
+      expect(results, {
+        'https://example.com:8443/': 'undefined',
+        'https://example.com.evil.test/': 'undefined',
+        'https://example.com/': '1',
+      });
+    } finally {
+      await t.dispose();
+    }
+  });
+
   // S5b. A click() from page JS is not a user gesture either.
   testWidgets('S5b scripted click does not open the color dialog', (
     tester,

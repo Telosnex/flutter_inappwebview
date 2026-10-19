@@ -70,6 +70,7 @@
 #include "../utils/flutter.h"
 #include "../utils/gl_context.h"
 #include "../utils/log.h"
+#include "../utils/origin.h"
 #include "../utils/uri.h"
 #include "in_app_webview_manager.h"
 #include "simd_convert.h"
@@ -150,32 +151,6 @@ std::string GenerateRandomSecret(size_t length = 32) {
 
 // Key for the InAppWebView* stored on its WebKitWebView.
 constexpr const char* kViewDataKey = "flutter-inappwebview-view";
-
-// "scheme://host[:port]" of a URL, as the browser defines it. Userinfo,
-// path and query are not part of it. Empty for URLs with no origin.
-std::string OriginOfUrl(const std::string& url) {
-  WebKitSecurityOrigin* origin = webkit_security_origin_new_for_uri(url.c_str());
-  if (origin == nullptr) return "";
-  gchar* str = webkit_security_origin_to_string(origin);
-  std::string result = str != nullptr ? str : "";
-  g_free(str);
-  webkit_security_origin_unref(origin);
-  return result;
-}
-
-// A JS string literal for any text: quotes, backslashes and line breaks
-// are escaped.
-std::string JsStringLiteral(const std::string& text) {
-  std::string out = json(text).dump(-1, ' ', false, json::error_handler_t::replace);
-  // JSON allows U+2028 and U+2029 in strings; older JS does not.
-  for (const char* sep : {"\xE2\x80\xA8", "\xE2\x80\xA9"}) {
-    size_t pos = 0;
-    while ((pos = out.find(sep, pos)) != std::string::npos) {
-      out.replace(pos, 3, sep[2] == '\xA8' ? "\\u2028" : "\\u2029");
-    }
-  }
-  return out;
-}
 
 #ifdef HAVE_WPE_BACKEND_LEGACY
 // Get the directory where the executable is located (only needed for legacy backend)
@@ -1155,19 +1130,28 @@ void InAppWebView::AddPluginScripts() {
     }
   }
 
+  // An empty bridge allow list turns the bridge off, as if
+  // javaScriptBridgeEnabled were false.
+  if (javaScriptBridgeOriginAllowList.has_value() && javaScriptBridgeOriginAllowList->empty()) {
+    return;
+  }
+
   // === Add JavaScript Bridge Plugin Script ===
   // This is the core bridge for communication between web content and native code
   auto jsBridgeScript = JavaScriptBridgeJS::JAVASCRIPT_BRIDGE_JS_PLUGIN_SCRIPT(
       js_bridge_secret_, javaScriptBridgeOriginAllowList, javaScriptBridgeForMainFrameOnly);
   user_content_controller_->addPluginScript(std::move(jsBridgeScript));
   // The internal call function is a separate script: if it ever runs twice
-  // in one realm, only its own `const` fails, not the bridge.
+  // in one realm, only its own `const` fails, not the bridge. The origin
+  // check is inside its source: wrapping it in a block would hide the
+  // `const` from the other plugin scripts (N1).
   user_content_controller_->addPluginScript(std::make_unique<PluginScript>(
       "InternalCall",
       JavaScriptBridgeJS::INTERNAL_CALL_JS_SOURCE(js_internal_call_name_, js_bridge_secret_,
-                                                  js_internal_secret_),
+                                                  js_internal_secret_,
+                                                  OriginCheckJs(javaScriptBridgeOriginAllowList)),
       UserScriptInjectionTime::atDocumentStart, javaScriptBridgeForMainFrameOnly,
-      javaScriptBridgeOriginAllowList));
+      std::nullopt));
 
   // === Add Console Log Interception Script ===
   // Note: Console log is always for main frame only to avoid issues
@@ -4002,6 +3986,12 @@ void InAppWebView::OnLoadChanged(WebKitWebView* web_view, WebKitLoadEvent load_e
       self->channel_delegate_->onPageCommitVisible(self->getUrl().value_or(""));
       break;
     case WEBKIT_LOAD_FINISHED:
+      // A new load that starts before the old one finishes makes WebKit
+      // finish the old one while the view URI is already the new URL. The
+      // new load is still running, so this is not a load stop (N2).
+      if (webkit_web_view_is_loading(web_view)) {
+        break;
+      }
       self->channel_delegate_->onLoadStop(self->getUrl().value_or(""));
       break;
     default:

@@ -72,8 +72,10 @@ class UserContentController {
   ScriptMessageHandler script_message_handler_;
   std::map<std::string, ScriptMessageWithReplyHandler> script_message_with_reply_handlers_;
 
-  // Helper to convert UserScript to WebKitUserScript
-  WebKitUserScript* createWebKitUserScript(const std::shared_ptr<UserScript>& userScript) const;
+  // A WebKitUserScript for [userScript], or nullptr when its
+  // allowedOriginRules allow no origin.
+  WebKitUserScript* createWebKitUserScript(const UserScript& userScript) const;
+  void addWebKitScript(const UserScript& userScript);
 
   // Rebuild all scripts (called after add/remove)
   void rebuildScripts();

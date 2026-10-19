@@ -1003,7 +1003,9 @@ document.addEventListener('keydown', e => window.__keys.push((e.ctrlKey ? 'C-' :
     });
     final origin = 'http://[::1]:${s.port}';
     final got = <String>[];
-    final t = await TestView.start(tester, waitForLoad: false);
+    // Wait for the first page: a listener added while it is still loading
+    // can miss the next document (a separate WebKit race).
+    final t = await TestView.start(tester);
     try {
       await t.controller.addWebMessageListener(
         LinuxWebMessageListener(
@@ -1017,7 +1019,11 @@ document.addEventListener('keydown', e => window.__keys.push((e.ctrlKey ? 'C-' :
       await t.controller.loadUrl(
         urlRequest: URLRequest(url: WebUri('$origin/')),
       );
-      await waitFor(tester, () => t.loadStops.isNotEmpty, reason: 'load');
+      await waitFor(
+        tester,
+        () => t.loadStops.any((u) => u != null && u.startsWith(origin)),
+        reason: 'IPv6 page load',
+      );
       final has = await t.js('typeof reviewObj');
       if (has == 'object') {
         await t.js("reviewObj.postMessage('hi'); true;");

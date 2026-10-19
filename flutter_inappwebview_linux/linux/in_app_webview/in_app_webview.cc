@@ -147,6 +147,9 @@ std::string GenerateRandomSecret(size_t length = 32) {
 
 }  // namespace
 
+// Key for the InAppWebView* stored on its WebKitWebView.
+constexpr const char* kViewDataKey = "flutter-inappwebview-view";
+
 #ifdef HAVE_WPE_BACKEND_LEGACY
 // Get the directory where the executable is located (only needed for legacy backend)
 static std::string GetExecutableDir() {
@@ -377,6 +380,7 @@ InAppWebView::~InAppWebView() {
     g_cancellable_cancel(js_cancellable_);
   }
   CleanupMonitorChangeHandlers();
+  DisposeLateCallbacks();
   DisconnectEventHandlers();
 
   context_menu_popup_.reset();
@@ -1764,10 +1768,10 @@ void InAppWebView::postUrl(const std::string& url, const std::vector<uint8_t>& p
   // We need to wait for the load to complete, so we use a delayed approach
   std::string* js_copy = new std::string(js);
   g_timeout_add(100, [](gpointer user_data) -> gboolean {
-    auto* data = static_cast<std::pair<InAppWebView*, std::string*>*>(user_data);
-    if (data->first->webview() != nullptr) {
+    auto* data = static_cast<std::pair<WebKitWebView*, std::string*>*>(user_data);
+    {
       webkit_web_view_evaluate_javascript(
-          data->first->webview(),
+          data->first,
           data->second->c_str(),
           -1,
           nullptr,  // world
@@ -1776,10 +1780,11 @@ void InAppWebView::postUrl(const std::string& url, const std::vector<uint8_t>& p
           nullptr,  // callback
           nullptr); // user_data
     }
+    g_object_unref(data->first);
     delete data->second;
     delete data;
     return G_SOURCE_REMOVE;
-  }, new std::pair<InAppWebView*, std::string*>(this, js_copy));
+  }, new std::pair<WebKitWebView*, std::string*>(WEBKIT_WEB_VIEW(g_object_ref(webview_)), js_copy));
 }
 
 void InAppWebView::reload() {
@@ -2386,7 +2391,11 @@ void InAppWebView::createWebMessageChannel(
   FlBinaryMessenger* messenger = messenger_;
 
   // Execute JavaScript to create the channel
-  evaluateJavascript(js, std::nullopt, [self, callback, channelId, messenger](const std::optional<std::string>& result) {
+  evaluateJavascript(js, std::nullopt, [alive = std::weak_ptr<int>(lifetime_token_), self, callback, channelId, messenger](const std::optional<std::string>& result) {
+    if (alive.expired()) {
+      callback(std::nullopt);
+      return;
+    }
     // If we got a result, the channel was created successfully
     if (result.has_value()) {
       // Create and store the WebMessageChannel object
@@ -3957,8 +3966,10 @@ gboolean InAppWebView::OnDecidePolicy(WebKitWebView* web_view, WebKitPolicyDecis
       g_object_ref(decision);
       
       auto callback = std::make_unique<WebViewChannelDelegate::NavigationResponseCallback>();
+      const bool downloadUnsupported =
+          !is_mime_type_supported && self->settings_ && self->settings_->useOnDownloadStart;
       
-      callback->nonNullSuccess = [self, decision, is_mime_type_supported](int action) -> bool {
+      callback->nonNullSuccess = [decision, downloadUnsupported](int action) -> bool {
         // NavigationResponseAction: CANCEL=0, ALLOW=1, DOWNLOAD=2
         switch (action) {
           case 0:  // CANCEL
@@ -3969,7 +3980,7 @@ gboolean InAppWebView::OnDecidePolicy(WebKitWebView* web_view, WebKitPolicyDecis
             break;
           case 1:  // ALLOW (default)
           default:
-            if (!is_mime_type_supported && self->settings_ && self->settings_->useOnDownloadStart) {
+            if (downloadUnsupported) {
               // WebKit can't display this - convert to download
               webkit_policy_decision_download(decision);
             } else {
@@ -3981,9 +3992,9 @@ gboolean InAppWebView::OnDecidePolicy(WebKitWebView* web_view, WebKitPolicyDecis
         return false;  // Don't run defaultBehaviour
       };
       
-      callback->defaultBehaviour = [decision, is_mime_type_supported, self](const std::optional<int>& action) {
+      callback->defaultBehaviour = [decision, downloadUnsupported](const std::optional<int>& action) {
         // Default: allow navigation (or download if MIME not supported and download enabled)
-        if (!is_mime_type_supported && self->settings_ && self->settings_->useOnDownloadStart) {
+        if (downloadUnsupported) {
           webkit_policy_decision_download(decision);
         } else {
           webkit_policy_decision_use(decision);
@@ -3991,10 +4002,10 @@ gboolean InAppWebView::OnDecidePolicy(WebKitWebView* web_view, WebKitPolicyDecis
         g_object_unref(decision);
       };
       
-      callback->error = [decision, is_mime_type_supported, self](const std::string& code, const std::string& message) {
+      callback->error = [decision, downloadUnsupported](const std::string& code, const std::string& message) {
         debugLog("Error in onNavigationResponse: " + code + " - " + message);
         // On error, allow navigation
-        if (!is_mime_type_supported && self->settings_ && self->settings_->useOnDownloadStart) {
+        if (downloadUnsupported) {
           webkit_policy_decision_download(decision);
         } else {
           webkit_policy_decision_use(decision);
@@ -4089,14 +4100,16 @@ gboolean InAppWebView::OnDecidePolicy(WebKitWebView* web_view, WebKitPolicyDecis
       
       // CRITICAL: Set error handler to prevent navigation from being blocked on channel errors
       // Allow navigation on error to prevent page from being stuck
-      callback->error = [self, decision_id](const std::string& code, const std::string& message) {
+      callback->error = [alive = std::weak_ptr<int>(self->lifetime_token_), self, decision_id](const std::string& code, const std::string& message) {
+        if (alive.expired()) return;
         g_warning("shouldOverrideUrlLoading channel error: %s - %s", code.c_str(), message.c_str());
         // Allow navigation on error to prevent page from being stuck
         self->OnShouldOverrideUrlLoadingDecision(decision_id, true);
       };
       
       callback->defaultBehaviour =
-          [self, decision_id](const std::optional<NavigationActionPolicy> result) {
+          [alive = std::weak_ptr<int>(self->lifetime_token_), self, decision_id](const std::optional<NavigationActionPolicy> result) {
+            if (alive.expired()) return;
             bool allow = result.has_value() && result.value() == NavigationActionPolicy::allow;
             self->OnShouldOverrideUrlLoadingDecision(decision_id, allow);
           };
@@ -4351,6 +4364,7 @@ WebKitWebView* InAppWebView::OnCreateWebView(WebKitWebView* web_view,
   // Store the InAppWebView in the manager for later attachment by Dart
   auto transport = std::make_unique<WebViewTransport>(std::move(windowWebView), url_to_load);
   windowManager->AddWindowWebView(windowId, std::move(transport));
+  self->opened_window_ids_.push_back(windowId);
 
   auto createWindowAction =
       std::make_unique<CreateWindowAction>(navigation_action, windowId, nullptr);
@@ -4424,7 +4438,8 @@ gboolean InAppWebView::OnScriptDialog(WebKitWebView* web_view, WebKitScriptDialo
 
       callback->nonNullSuccess = [](JsAlertResponse response) { return !response.handledByClient; };
 
-      callback->defaultBehaviour = [pendingDialogs, capturedId](std::optional<JsAlertResponse>) {
+      callback->defaultBehaviour = [alive = std::weak_ptr<int>(self->lifetime_token_), pendingDialogs, capturedId](std::optional<JsAlertResponse>) {
+        if (alive.expired()) return;
         auto it = pendingDialogs->find(capturedId);
         if (it != pendingDialogs->end()) {
           webkit_script_dialog_close(it->second);
@@ -4444,7 +4459,8 @@ gboolean InAppWebView::OnScriptDialog(WebKitWebView* web_view, WebKitScriptDialo
       auto* pendingDialogs = &self->pending_script_dialogs_;
       int64_t capturedId = dialogId;
 
-      callback->nonNullSuccess = [pendingDialogs, capturedId](JsConfirmResponse response) {
+      callback->nonNullSuccess = [alive = std::weak_ptr<int>(self->lifetime_token_), pendingDialogs, capturedId](JsConfirmResponse response) {
+        if (alive.expired()) return false;
         auto it = pendingDialogs->find(capturedId);
         if (it != pendingDialogs->end()) {
           webkit_script_dialog_confirm_set_confirmed(
@@ -4456,7 +4472,8 @@ gboolean InAppWebView::OnScriptDialog(WebKitWebView* web_view, WebKitScriptDialo
         return false;
       };
 
-      callback->defaultBehaviour = [pendingDialogs, capturedId](std::optional<JsConfirmResponse>) {
+      callback->defaultBehaviour = [alive = std::weak_ptr<int>(self->lifetime_token_), pendingDialogs, capturedId](std::optional<JsConfirmResponse>) {
+        if (alive.expired()) return;
         auto it = pendingDialogs->find(capturedId);
         if (it != pendingDialogs->end()) {
           webkit_script_dialog_confirm_set_confirmed(it->second, FALSE);
@@ -4483,7 +4500,8 @@ gboolean InAppWebView::OnScriptDialog(WebKitWebView* web_view, WebKitScriptDialo
       auto* pendingDialogs = &self->pending_script_dialogs_;
       int64_t capturedId = dialogId;
 
-      callback->nonNullSuccess = [pendingDialogs, capturedId](JsPromptResponse response) {
+      callback->nonNullSuccess = [alive = std::weak_ptr<int>(self->lifetime_token_), pendingDialogs, capturedId](JsPromptResponse response) {
+        if (alive.expired()) return false;
         auto it = pendingDialogs->find(capturedId);
         if (it != pendingDialogs->end()) {
           if (response.action == JsPromptResponseAction::CONFIRM && response.value.has_value()) {
@@ -4496,7 +4514,8 @@ gboolean InAppWebView::OnScriptDialog(WebKitWebView* web_view, WebKitScriptDialo
         return false;
       };
 
-      callback->defaultBehaviour = [pendingDialogs, capturedId](std::optional<JsPromptResponse>) {
+      callback->defaultBehaviour = [alive = std::weak_ptr<int>(self->lifetime_token_), pendingDialogs, capturedId](std::optional<JsPromptResponse>) {
+        if (alive.expired()) return;
         auto it = pendingDialogs->find(capturedId);
         if (it != pendingDialogs->end()) {
           webkit_script_dialog_close(it->second);
@@ -4515,7 +4534,8 @@ gboolean InAppWebView::OnScriptDialog(WebKitWebView* web_view, WebKitScriptDialo
       auto* pendingDialogs = &self->pending_script_dialogs_;
       int64_t capturedId = dialogId;
 
-      callback->nonNullSuccess = [pendingDialogs, capturedId](JsBeforeUnloadResponse response) {
+      callback->nonNullSuccess = [alive = std::weak_ptr<int>(self->lifetime_token_), pendingDialogs, capturedId](JsBeforeUnloadResponse response) {
+        if (alive.expired()) return false;
         auto it = pendingDialogs->find(capturedId);
         if (it != pendingDialogs->end()) {
           webkit_script_dialog_confirm_set_confirmed(it->second, response.shouldAllowNavigation);
@@ -5861,6 +5881,7 @@ static void OnDateDialogResponse(GtkDialog* dialog, gint response_id, gpointer u
   
   // Helper lambda for cleanup
   auto cleanup = [&]() {
+    self->active_date_ctx_ = nullptr;
     delete ctx;
     gtk_widget_destroy(GTK_WIDGET(dialog));
     g_object_unref(dialog);
@@ -6129,6 +6150,7 @@ void InAppWebView::ShowDatePicker(const std::string& inputType, const std::strin
   
   // Connect response signal
   g_signal_connect(dialog, "response", G_CALLBACK(OnDateDialogResponse), ctx);
+  active_date_ctx_ = ctx;
   
   // Handle focus-out to auto-close (like a dropdown)
   g_signal_connect(dialog, "focus-out-event",
@@ -7128,7 +7150,12 @@ gboolean InAppWebView::OnRunFileChooser(WebKitWebView* web_view,
       false,  // isCaptureEnabled - not exposed by WPE API
       std::nullopt,  // title
       std::nullopt,  // filenameHint
-      [self, request, selectMultipleCopy, acceptTypesCopy, parentWindow](ShowFileChooserResponse response) {
+      [alive = std::weak_ptr<int>(self->lifetime_token_), self, request, selectMultipleCopy, acceptTypesCopy, parentWindow](ShowFileChooserResponse response) {
+        if (alive.expired()) {
+          webkit_file_chooser_request_cancel(request);
+          g_object_unref(request);
+          return;
+        }
         if (response.handledByClient) {
           // Client handled it - use the file paths from Dart
           if (response.filePaths.has_value() && !response.filePaths->empty()) {
@@ -7304,6 +7331,10 @@ void InAppWebView::OnDownloadStarted(WebKitNetworkSession* network_session,
                                      WebKitDownload* download,
                                      gpointer user_data) {
   auto* self = static_cast<InAppWebView*>(user_data);
+  // The network session is shared. Act only on this view's downloads (W2a).
+  if (self == nullptr || webkit_download_get_web_view(download) != self->webview_) {
+    return;
+  }
   if (ShouldIgnoreCallback(self)) {
     webkit_download_cancel(download);
     return;
@@ -7329,6 +7360,12 @@ void InAppWebView::OnDownloadStarted(WebKitNetworkSession* network_session,
 
   // Keep download reference alive during async callback
   g_object_ref(download);
+  // Without a handler, WebKit saves the file to ~/Downloads at once, and the
+  // cancel after Dart answers runs on a finished download (C3). Returning
+  // TRUE without a destination holds the download until it is cancelled.
+  g_signal_connect(download, "decide-destination",
+                   G_CALLBACK(+[](WebKitDownload*, gchar*, gpointer) -> gboolean { return TRUE; }),
+                   nullptr);
 
   callback->nonNullSuccess = [download](DownloadStartResponse response) -> bool {
     // Cancel the download regardless of response - we just notify Dart
@@ -7456,7 +7493,7 @@ bool InAppWebView::handleScriptMessageWithReply(const std::string& body, WebKitS
   json bodyJson;
   try {
     bodyJson = json::parse(body);
-  } catch (const json::parse_error& e) {
+  } catch (const json::exception& e) {
     return false;
   }
 
@@ -7568,7 +7605,7 @@ bool InAppWebView::handleScriptMessageWithReply(const std::string& body, WebKitS
             message = firstArg["message"].get<std::string>();
           }
         }
-      } catch (const json::parse_error& e) {}
+      } catch (const json::exception& e) {}
     }
 
     int64_t messageLevel = 1;  // LOG
@@ -7614,7 +7651,7 @@ bool InAppWebView::handleScriptMessageWithReply(const std::string& body, WebKitS
             duration = firstArg["duration"].get<double>();
           }
         }
-      } catch (const json::parse_error& e) {}
+      } catch (const json::exception& e) {}
     }
 
     if (targetWebView->channel_delegate_) {
@@ -7663,7 +7700,7 @@ bool InAppWebView::handleScriptMessageWithReply(const std::string& body, WebKitS
             }
           }
         }
-      } catch (const json::parse_error& e) {}
+      } catch (const json::exception& e) {}
     }
 
     if (!webMessageChannelId.empty()) {
@@ -7719,7 +7756,7 @@ bool InAppWebView::handleScriptMessageWithReply(const std::string& body, WebKitS
             }
           }
         }
-      } catch (const json::parse_error& e) {}
+      } catch (const json::exception& e) {}
     }
 
     if (!jsObjectName.empty()) {
@@ -7801,7 +7838,7 @@ bool InAppWebView::handleScriptMessageWithReply(const std::string& body, WebKitS
             colorSpace = argsObj["colorSpace"].get<std::string>();
           }
         }
-      } catch (const json::parse_error& e) {
+      } catch (const json::exception& e) {
         debugLog("_onColorInputClicked: JSON parse error: " + std::string(e.what()));
       }
     }
@@ -7870,7 +7907,7 @@ bool InAppWebView::handleScriptMessageWithReply(const std::string& body, WebKitS
           }
           // elemRect is for positioning, we use screen cursor position instead
         }
-      } catch (const json::parse_error& e) {
+      } catch (const json::exception& e) {
         debugLog("_onDateInputClicked: JSON parse error: " + std::string(e.what()));
       }
     }
@@ -7920,7 +7957,7 @@ bool InAppWebView::handleScriptMessageWithReply(const std::string& body, WebKitS
               printTitle = argsObj["title"].get<std::string>();
             }
           }
-        } catch (const json::parse_error& e) {
+        } catch (const json::exception& e) {
           debugLog("_onPrintRequest: JSON parse error: " + std::string(e.what()));
         }
       }
@@ -8093,6 +8130,7 @@ void InAppWebView::RegisterCustomSchemes() {
     return;
   }
 
+  g_object_set_data(G_OBJECT(webview_), kViewDataKey, this);
   WebKitWebContext* context = webkit_web_view_get_context(webview_);
   if (context == nullptr) {
     errorLog("InAppWebView: Could not get WebKitWebContext for custom scheme registration");
@@ -8116,14 +8154,22 @@ void InAppWebView::RegisterCustomSchemes() {
       continue;
     }
 
-    // Register the custom URI scheme with the web context
-    webkit_web_context_register_uri_scheme(
-        context, scheme.c_str(), InAppWebView::OnCustomSchemeRequest, this, nullptr);
+    // The context is shared by all views, and a scheme registers only once
+    // per context. The handler finds the view from the request.
+    static std::set<std::pair<WebKitWebContext*, std::string>> registered;
+    if (registered.insert({context, scheme}).second) {
+      webkit_web_context_register_uri_scheme(
+          context, scheme.c_str(), InAppWebView::OnCustomSchemeRequest, nullptr, nullptr);
+    }
   }
 }
 
 void InAppWebView::OnCustomSchemeRequest(WebKitURISchemeRequest* request, gpointer user_data) {
-  auto* self = static_cast<InAppWebView*>(user_data);
+  (void)user_data;
+  WebKitWebView* requestView = webkit_uri_scheme_request_get_web_view(request);
+  auto* self = requestView != nullptr
+                   ? static_cast<InAppWebView*>(g_object_get_data(G_OBJECT(requestView), kViewDataKey))
+                   : nullptr;
   if (self == nullptr || self->webview_ == nullptr || self->channel_delegate_ == nullptr) {
     // Finish with error if we can't handle it
     g_autoptr(GError) error =
@@ -8212,6 +8258,84 @@ void InAppWebView::OnCustomSchemeRequest(WebKitURISchemeRequest* request, gpoint
 
   // Invoke the Dart callback
   self->channel_delegate_->onLoadResourceWithCustomScheme(webResourceRequest, std::move(callback));
+}
+
+// Closes everything that can call back into this view later: GTK dialogs,
+// the <select> popup, pending JS dialogs and unclaimed popup windows.
+void InAppWebView::DisposeLateCallbacks() {
+  if (webview_ != nullptr) {
+    g_object_set_data(G_OBJECT(webview_), kViewDataKey, nullptr);
+  }
+
+  for (auto& pair : pending_script_dialogs_) {
+    webkit_script_dialog_close(pair.second);
+    webkit_script_dialog_unref(pair.second);
+  }
+  pending_script_dialogs_.clear();
+
+  if (active_color_dialog_ != nullptr) {
+    g_signal_handlers_disconnect_by_func(active_color_dialog_,
+                                         reinterpret_cast<gpointer>(OnColorDialogResponse), this);
+    gtk_widget_destroy(active_color_dialog_);
+    g_object_unref(active_color_dialog_);
+    active_color_dialog_ = nullptr;
+  }
+  if (pending_color_reply_ != nullptr) {
+    webkit_script_message_reply_unref(pending_color_reply_);
+    pending_color_reply_ = nullptr;
+  }
+
+  if (active_date_dialog_ != nullptr) {
+    if (active_date_ctx_ != nullptr) {
+      g_signal_handlers_disconnect_by_func(active_date_dialog_,
+                                           reinterpret_cast<gpointer>(OnDateDialogResponse),
+                                           active_date_ctx_);
+      delete static_cast<DateDialogContext*>(active_date_ctx_);
+      active_date_ctx_ = nullptr;
+    }
+    gtk_widget_destroy(active_date_dialog_);
+    g_object_unref(active_date_dialog_);
+    active_date_dialog_ = nullptr;
+  }
+  if (pending_date_reply_ != nullptr) {
+    webkit_script_message_reply_unref(pending_date_reply_);
+    pending_date_reply_ = nullptr;
+  }
+
+  if (active_file_dialog_ != nullptr) {
+    if (file_chooser_context_ != nullptr) {
+      auto* context = static_cast<FileChooserContext*>(file_chooser_context_);
+      if (context->response_handler_id != 0) {
+        g_signal_handler_disconnect(active_file_dialog_, context->response_handler_id);
+      }
+      webkit_file_chooser_request_cancel(context->request);
+      delete context;
+      file_chooser_context_ = nullptr;
+    }
+    gtk_widget_destroy(active_file_dialog_);
+    g_object_unref(active_file_dialog_);
+    active_file_dialog_ = nullptr;
+  }
+
+  if (option_menu_popup_) {
+    option_menu_popup_->SetItemSelectedCallback(nullptr);
+    option_menu_popup_->SetDismissedCallback(nullptr);
+    option_menu_popup_->Hide();
+    option_menu_popup_.reset();
+  }
+  if (webkit_option_menu_ != nullptr) {
+    webkit_option_menu_close(webkit_option_menu_);
+    g_object_unref(webkit_option_menu_);
+    webkit_option_menu_ = nullptr;
+  }
+
+  // Popups that Dart accepted but never attached (C5b).
+  if (InAppWebViewManager* manager = WindowManager()) {
+    for (int64_t id : opened_window_ids_) {
+      manager->RemoveWindowWebView(id);
+    }
+  }
+  opened_window_ids_.clear();
 }
 
 }  // namespace flutter_inappwebview_plugin

@@ -591,6 +591,8 @@ class InAppWebView {
   // Callbacks that Dart answers later hold a weak_ptr to this. When it has
   // expired, the view is gone and the callback must not touch its members.
   std::shared_ptr<int> lifetime_token_ = std::make_shared<int>(0);
+  void DisposeLateCallbacks();
+  std::vector<int64_t> opened_window_ids_;  // Popups this view opened (window.open)
 
   std::map<int64_t, WebKitPermissionRequest*> pending_permission_requests_;
   int64_t next_permission_id_ = 0;
@@ -728,6 +730,7 @@ class InAppWebView {
   GtkWidget* active_date_dialog_ = nullptr;  // Active date picker dialog
   int64_t date_dialog_show_time_ = 0;        // Time when dialog was shown
   WebKitScriptMessageReply* pending_date_reply_ = nullptr;  // WebKit reply for Promise resolution
+  void* active_date_ctx_ = nullptr;  // DateDialogContext of active_date_dialog_
 
   // File chooser state (for <input type="file"> support)
   // Public because accessed from C-style GTK callback

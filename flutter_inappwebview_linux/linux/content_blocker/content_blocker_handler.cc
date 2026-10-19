@@ -49,6 +49,9 @@ ContentBlockerHandler::ContentBlockerHandler(WebKitUserContentManager* content_m
 }
 
 ContentBlockerHandler::~ContentBlockerHandler() {
+  // A compile in progress must not call back into this object or its view.
+  g_cancellable_cancel(cancellable_);
+  g_object_unref(cancellable_);
   removeAllFilters();
 
   if (filter_store_ != nullptr) {
@@ -299,8 +302,7 @@ void ContentBlockerHandler::compileContentBlockers(const std::string& jsonSource
 
   // Start async compilation
   webkit_user_content_filter_store_save(filter_store_, filter_identifier_.c_str(), sourceBytes,
-                                         nullptr,  // cancellable
-                                         onFilterCompiled, context);
+                                         cancellable_, onFilterCompiled, context);
 
   g_bytes_unref(sourceBytes);
 }
@@ -316,14 +318,16 @@ void ContentBlockerHandler::onFilterCompiled(GObject* source, GAsyncResult* resu
   auto callback = std::move(context->callback);
   delete context;
 
-  if (handler == nullptr || handler->filter_store_ == nullptr) {
-    if (callback) callback(false);
+  GError* error = nullptr;
+  WebKitUserContentFilter* filter = webkit_user_content_filter_store_save_finish(
+      WEBKIT_USER_CONTENT_FILTER_STORE(source), result, &error);
+
+  // Cancelled: the handler and its view are gone. Touch neither.
+  if (error != nullptr && g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
+    g_error_free(error);
+    if (filter != nullptr) webkit_user_content_filter_unref(filter);
     return;
   }
-
-  GError* error = nullptr;
-  WebKitUserContentFilter* filter =
-      webkit_user_content_filter_store_save_finish(handler->filter_store_, result, &error);
 
   if (error != nullptr) {
     errorLog("ContentBlockerHandler: Failed to compile content blockers: " +

@@ -85,6 +85,7 @@ class ContentBlockerHandler {
 
   WebKitUserContentManager* content_manager_;  // Not owned (from webview)
   WebKitUserContentFilterStore* filter_store_;  // Owned
+  GCancellable* cancellable_ = g_cancellable_new();  // Cancelled on destruction
   std::string filter_identifier_;
   std::string store_path_;
 

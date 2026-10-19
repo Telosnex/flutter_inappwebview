@@ -199,8 +199,31 @@ Found by reading. No test, because the result is hard to observe from Dart, or b
 
 ## 6. Open questions
 
-1. **Backend.** The shipped Snap (x6) uses legacy WPEBackend-fdo. `WEBKIT_HAS_WPE_PLATFORM_API` is empty in its CMake cache, but the bundled WPE SDK has WPEPlatform (`wpe-platform-2.0.pc`). Is legacy intended, or does the CMake check fail? C1 is legacy only, and all tests ran on legacy. Read the `WEBKIT_HAS_WPE_PLATFORM_API` check in `linux/CMakeLists.txt` and its history first.
-2. **Owner: where fixes go.** The fork only, or also upstream PRs to `flutter_inappwebview`?
-3. **Owner: W18.** Fix in `flutter_inappwebview_platform_interface`, or work around it on the Linux side?
-4. **Owner: scope.** C1 only first, or C1 and W16 to W19 together?
+1. **Backend. Answered 2026-10-19: legacy is not intended. The check fails.** `linux/CMakeLists.txt` prefers WPEPlatform and falls back to legacy FDO only if `webkit_web_view_get_wpe_view` does not link. The check sets `CMAKE_REQUIRED_LIBRARIES` to `${WPE_WEBKIT_LIBRARIES}`, which are bare names (`WPEWebKit-2.0`, `wpe-1.0`) without the library directories. A system WPE in `/usr/lib` links. The bundled SDK in `~/.cache/flutter_inappwebview/wpe-sdk/` does not: `ld: cannot find -lWPEWebKit-2.0`. The SDK has the function (header line 375, exported from `libWPEWebKit-2.0.so`), and the same test links with `pkg-config --libs`. So every SDK build, including the Snap and Flatpak, builds legacy FDO. Fix: use `${WPE_WEBKIT_LINK_LIBRARIES}` and `${WPE_PLATFORM_LINK_LIBRARIES}` (full paths). That fix switches shipped builds to WPEPlatform, which no test has run on yet. Owner decision. **Fixed 2026-10-19, see section 7.**
+2. **Decided 2026-10-19.** Fixes go to our fork only. W18 is patched in the fork's copy of `flutter_inappwebview_platform_interface`. The first pass is C1, then W16 to W19.
+
+## 7. Fix status (2026-10-19)
+
+Commits `84367c1d8` and the WPEBuffer fix after it, on `review/inappwebview-lifetime`.
+
+**Backend.** The CMake check now links with full library paths. Builds with the bundled SDK use WPEPlatform (`WEBKIT_HAS_WPE_PLATFORM_API=1`, no FDO symbols in the plugin). The fixes for C1 also apply to the legacy FDO path, which stays the fallback.
+
+**Fixed, test passes (normal and ASan):**
+
+| ID | Fix |
+| --- | --- |
+| C1, C1b, C1c | FDO callbacks get a `WpeBackendLink`. The destructor clears it. Pending JS calls use a `GCancellable` that the destructor cancels. |
+| C4d, C4e | Permission and auth callbacks hold a `weak_ptr` to the view. The destructor denies or cancels pending requests. |
+| C10 | The TLS callback copies `failing_uri` and loads it after PROCEED. |
+| C13 (new) | WPEPlatform only. The view kept the last `WPEBuffer` without a reference. WebKit freed it on reload, and the next frame read it. Found by ASan in C5 and C10 on WPEPlatform. The view now holds a reference. |
+| W16 | `previousFailureCount` is an int. Linux values for `HttpAuthResponseAction`. |
+| W17 | `SslError.code` is an int. Linux values for `SslErrorType`. |
+| W18 | Linux values for `PermissionResourceType` (platform interface in this fork). `DEVICE_INFO` maps to `UNKNOWN`. |
+| W19 | The popup view is stored in the plugin's `InAppWebViewManager`, also for headless parents. `createInAppWebView` and headless `run` take it by `windowId`. |
+
+**Unblocked, now pass:** C4f, C5, S3.
+
+**Unblocked, now red:** S4a (origin has path and query), S4b (iframe origin), C5b (popups that opened while the opener lived are not freed when it closes: 3 of 3).
+
+**Unchanged on WPEPlatform:** the other results in sections 1 to 3. The ASan crashes C4a, C4b, C4c, C6, C8a, C8b, C8c and C9b reproduce on WPEPlatform as on FDO.
 

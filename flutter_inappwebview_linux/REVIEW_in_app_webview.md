@@ -227,3 +227,30 @@ Commits `84367c1d8` and the WPEBuffer fix after it, on `review/inappwebview-life
 
 **Unchanged on WPEPlatform:** the other results in sections 1 to 3. The ASan crashes C4a, C4b, C4c, C6, C8a, C8b, C8c and C9b reproduce on WPEPlatform as on FDO.
 
+### 7.1 Second pass (2026-10-20)
+
+Commits `ede666708` (crashes), `e0055ec8a` (security), `4ca1a6427` (behavior) and the W23 test fix. Full suite, normal and ASan builds: 96 pass. The only reds are S4b and W6b.
+
+**Fixed:** C2, C2b, C3, C4a-c, C5b, C6, C7, C8a-d, C9b; S1, S1b, S1c, S2, S4a, S5, S8a-d; W1, W1b, W2a, W3a-d, W4, W5a-c, W6a, W6c, W7, W8, W10-W13, W22-W24.
+
+**Notes on the fixes:**
+- C7 and W13 had a second cause: a page fetch() to a custom scheme always failed. Responses now carry CORS headers, and the scheme is CORS-enabled and secure.
+- W23 had a second cause: native named the listener channel with its own id, so no listener message reached Dart, for any origin.
+- S2 and S5 changed how tests open dialogs. Page JS cannot call internal handlers, so C8a, C8b and W4 open the dialogs with a real tap. New tests: S2-control, S2b, S5b.
+- W12: with `javaScriptCanOpenWindowsAutomatically` off, every `window.open` is blocked, also with a user gesture. WebKit counts `evaluateJavascript` as a gesture, so a gesture rule could not be tested.
+- W5a uses the same XHR path as `postUrl`. The response replaces the document; the URL stays the old one. WebKit has no API for a request body.
+
+**Not fixed:**
+
+| ID | Why |
+| --- | --- |
+| S4b | WebKit does not send a permission request from a cross-origin iframe for `Notification`, and its permission API has no frame origin. The test cannot be reached, and there is no API to fix it with. |
+| W6b | The WebKit navigation API has no frame information. `get_frame_name` is the link target, not the frame. |
+
+**New findings:**
+
+| ID | Finding |
+| --- | --- |
+| N1 | `allowedOriginRules` of user scripts and plugin scripts, `pluginScriptsOriginAllowList` and `javaScriptBridgeOriginAllowList` are never enforced. `createWebKitUserScript` passes no allow list to WebKit. The bridge is injected on every origin. `javaScriptHandlersOriginAllowList` (S1) still applies. |
+| N2 | A web message listener added while the first page still loads can miss the next document. W23 now waits for the first page; the race is not fixed. |
+

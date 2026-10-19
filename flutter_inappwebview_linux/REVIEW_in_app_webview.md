@@ -229,7 +229,7 @@ Commits `84367c1d8` and the WPEBuffer fix after it, on `review/inappwebview-life
 
 ### 7.1 Second pass (2026-10-20)
 
-Commits `ede666708` (crashes), `e0055ec8a` (security), `4ca1a6427` (behavior) and the W23 test fix. Full suite, normal and ASan builds: 96 pass. The only reds are S4b and W6b.
+Commits `ede666708` (crashes), `e0055ec8a` (security), `b9904f82c` (behavior) and the W23 test fix. Full suite, normal and ASan builds: 96 pass. The only reds are S4b and W6b.
 
 **Fixed:** C2, C2b, C3, C4a-c, C5b, C6, C7, C8a-d, C9b; S1, S1b, S1c, S2, S4a, S5, S8a-d; W1, W1b, W2a, W3a-d, W4, W5a-c, W6a, W6c, W7, W8, W10-W13, W22-W24.
 

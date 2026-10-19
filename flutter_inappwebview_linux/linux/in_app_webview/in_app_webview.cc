@@ -495,8 +495,11 @@ InAppWebView::~InAppWebView() {
     }
     
     // Release pending buffer back to WPE
-    if (current_buffer_ != nullptr && wpe_view_ != nullptr) {
-      wpe_view_buffer_released(wpe_view_, current_buffer_);
+    if (current_buffer_ != nullptr) {
+      if (wpe_view_ != nullptr) {
+        wpe_view_buffer_released(wpe_view_, current_buffer_);
+      }
+      g_object_unref(current_buffer_);
     }
     current_buffer_ = nullptr;
     current_buffer_width_ = 0;
@@ -1358,7 +1361,11 @@ void InAppWebView::OnWpePlatformBufferRendered(WPEBuffer* buffer) {
     }
     return;
   }
-  
+
+  // WebKit can free its buffers (on reload or navigation) while we still
+  // hold the previous one. Keep a reference until we release it.
+  g_object_ref(buffer);
+
   // Get buffer dimensions
   uint32_t buf_width = static_cast<uint32_t>(wpe_buffer_get_width(buffer));
   uint32_t buf_height = static_cast<uint32_t>(wpe_buffer_get_height(buffer));
@@ -1527,8 +1534,11 @@ void InAppWebView::OnWpePlatformBufferRendered(WPEBuffer* buffer) {
   // Release the PREVIOUS buffer now that we have a new one
   // The previous EGL image has been destroyed and we have a new frame,
   // so it's safe to let WPE reuse the old buffer's memory
-  if (previous_buffer != nullptr && wpe_view_ != nullptr && WPE_IS_BUFFER(previous_buffer)) {
-    wpe_view_buffer_released(wpe_view_, previous_buffer);
+  if (previous_buffer != nullptr) {
+    if (wpe_view_ != nullptr) {
+      wpe_view_buffer_released(wpe_view_, previous_buffer);
+    }
+    g_object_unref(previous_buffer);
   }
   
   if (buffer_handled && on_frame_available_) {

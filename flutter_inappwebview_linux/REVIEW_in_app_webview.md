@@ -254,3 +254,9 @@ Commits `ede666708` (crashes), `e0055ec8a` (security), `b9904f82c` (behavior) an
 | N1 | `allowedOriginRules` of user scripts and plugin scripts, `pluginScriptsOriginAllowList` and `javaScriptBridgeOriginAllowList` are never enforced. `createWebKitUserScript` passes no allow list to WebKit. The bridge is injected on every origin. `javaScriptHandlersOriginAllowList` (S1) still applies. |
 | N2 | A web message listener added while the first page still loads can miss the next document. W23 now waits for the first page; the race is not fixed. |
 
+### 7.2 N1 and N2 (2026-10-20)
+
+Commit `2b36bdb79`. Full suite, normal and ASan builds: the only reds are S4b and W6b. New tests N1a-control, N1a-d and N2 are red on `8657a3980`.
+
+- **N1, fixed.** A script runs only where `window.location.origin` is one of its rules. A rule is an exact origin, as for `javaScriptHandlersOriginAllowList` (S1). `'*'` or null allows every origin, and an empty list allows none. An empty bridge list turns the bridge off. WebKit's allow list ignores ports, so the check is in JS, as on iOS, macOS and Windows. Those platforms use regular expressions; Android allows `*.` subdomain rules. Linux does neither.
+- **N2, fixed. The cause was not the listener.** If a load starts before the previous load finishes, WebKit finishes the old load after the view URI is already the new URL. `onLoadStop` then reported the new URL for the old document. W23 waited for that event and ran JS in the old document. A `load-finished` while another load runs is now skipped. W23 again adds its listener during the first load.

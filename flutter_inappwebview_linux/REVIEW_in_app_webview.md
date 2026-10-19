@@ -1,66 +1,206 @@
 # Review: `linux/in_app_webview/in_app_webview.cc`
 
-Pin `4ff1c5407` (the commit Telosnex uses). Whole file read (8,148 lines),
-plus the parts of `in_app_webview.h`, `user_content_controller.cc`,
-`content_blocker_handler.cc`, `webview_channel_delegate.cc`,
-`base_callback_result.h`, `inappwebview_egl_texture.cc`, `simd_convert.h` and
-`javascript_bridge_js.h` needed to confirm findings. 2026-10-18.
+Pin `4ff1c5407` (the commit that Telosnex uses). I read the whole file (8,148 lines). I also read the parts of `in_app_webview.h`, `user_content_controller.cc`, `content_blocker_handler.cc`, `webview_channel_delegate.cc`, `base_callback_result.h`, `inappwebview_egl_texture.cc`, `simd_convert.h`, `javascript_bridge_js.h` and the date and color input scripts that the findings need. Updated 2026-10-19. This file holds all review findings and results. The earlier scratch notes are merged into sections 5 and 6.
 
-Tests: `example/integration_test/lifetime_review_test.dart` (header lists
-status). Run on Ubuntu 26.04 arm64, real Plasma session, cached WPE SDK
-`2ceafc2f`, **legacy FDO backend** (the backend the shipped Telosnex Snap uses:
-it links `libWPEBackend-fdo`, no WPEPlatform symbols). The existing
-`headless_regression_test.dart` passed 3/3 in the same setup.
+## Tests
 
-Labels: **Reproduced** = a test shows it. **Confirmed** = traced in code
-end to end. **Likely** = strong reading, not proven.
+Each finding has a red test in `example/integration_test/`:
+
+- `review_crash_test.dart`: section 1 (C ids).
+- `review_security_test.dart`: section 2 (S ids).
+- `review_behavior_test.dart`: section 3 (W ids).
+- `review_common.dart`: shared helpers and a local HTTP and HTTPS server.
+
+Each test asserts the correct behavior. On this pin, a red test fails or crashes. After a fix, it passes. Some tests have a precondition. If the precondition fails, the failure message names the finding that blocks it.
+
+The example runner has test-only hooks (`example/linux/runner/review_test_hooks.cc`). The hooks answer the real GTK color, date and file dialogs, click items in the plugin's popup menus, and count live instances of `WebKitWebView`, `WebKitNetworkSession`, `WebKitDownload` and `WebKitUserContentManager`. The hooks are off unless `FLUTTER_INAPPWEBVIEW_REVIEW_HOOKS=1` is set. Tests that need them skip without them.
+
+Setup for all results below: Ubuntu 26.04 arm64, a real Plasma session, the cached WPE SDK `2ceafc2f`, and the legacy FDO backend. The shipped Telosnex Snap uses this backend. It links `libWPEBackend-fdo` and has no WPEPlatform symbols.
+
+### Running the red tests
+
+1. Run one test per process. A native crash stops the whole run.
+   `flutter test integration_test/review_crash_test.dart -d linux --plain-name "C4a "`
+2. Put a space after the id in `--plain-name`. Without it, `C4` also selects `C4a` to `C4h`.
+3. For tests that use the hooks, set `FLUTTER_INAPPWEBVIEW_REVIEW_HOOKS=1` in the environment of `flutter test`.
+4. For use-after-free tests, use an AddressSanitizer build. A normal build often survives a use after free. Build with `CFLAGS` and `CXXFLAGS` set to `-fsanitize=address -fno-omit-frame-pointer -g -O1` and `LDFLAGS=-fsanitize=address`.
+5. In an ASan run, set `ASAN_OPTIONS=log_path=<dir>/asan`. `flutter test` does not show the stderr of the app, so the report is lost without `log_path`.
+
+Status words:
+
+- **ASan**: the ASan build reports `heap-use-after-free`. The use site and the free site are given.
+- **Red**: the test fails or crashes in a normal build.
+- **Blocked**: a different finding stops the test before it reaches the code. The blocking finding is named.
+- **Not reproduced**: the test passes. The finding stays as a code reading, or is withdrawn.
 
 ## 1. Crashes
 
-| # | What | Status |
+In every ASan row, the memory was freed by `~HeadlessInAppWebView`, which `dispose` calls, unless the row says otherwise.
+
+| # | What | Test result |
 |---|---|---|
-| C1 | **The Telosnex abort.** Legacy FDO: the exportable gets a raw `InAppWebView*` as client data and is destroyed only when WebKit frees the backend. `~InAppWebView` only unrefs the `WebKitWebView`; anything else holding a ref (a pending `evaluate_javascript`/`call_async_javascript_function` GTask, WebKit internals) keeps it alive. The next frame runs `wpe_export_shm_buffer_callback` → `OnExportShmBuffer` on freed memory. The same raw pointer goes to the fullscreen and pointer-lock handlers. | **Reproduced (KI-1)** first round. Trace: `wl_surface` commit → WPEBackend-fdo → `wpe_export_shm_buffer_callback` → `OnExportShmBuffer` → `..._dispatch_release_shm_exported_buffer` → SIGSEGV, right after "dealloc InAppWebView". Same frames as the Telosnex x6 abort. |
-| C2 | **Page JS kills the host app.** Internal bridge handlers are callable from page JS (the `callHandler` closure adds the secret; no reserved-name check). `onWebMessagePortMessageReceived` / `onWebMessageListenerPostMessageReceived` call `byte.get<int>()` on page data; only `json::parse_error` is caught, so a `type_error` escapes a GSignal callback → `std::terminate`. | **Reproduced (X-1)**: "terminate called after throwing ... type_error.302", SIGABRT. |
-| C3 | **Any download crashes** with `useOnDownloadStart`. No `decide-destination` handler, so WebKit saves the file to `~/Downloads` about 2 ms after `download-started`; when Dart answers, the plugin calls `webkit_download_cancel` on the finished download → SIGSEGV in WebKit. Also means "cancel" never works: the file is already written. One view is enough. | **Reproduced (X-5)**; diagnostic run logged finish (2 ms) before cancel. |
-| C4 | Every `self` / `&self->pending_*` capture in a channel callback runs after dispose: Flutter answers every platform message (null or not-implemented once the Dart handler is gone), and the callbacks have no cancellable. Navigation and response policy, script dialogs, permissions, auth, file chooser, TLS, create-window, JS handler replies, `getSelectedText` users, `createWebMessageChannel`. | Confirmed (channel delegate code). |
-| C5 | `UserContentController` connects `script-message-with-reply-received::callHandler` with raw `this` and never disconnects. Popup views share the parent's content manager: the child's destructor strips the parent's scripts and handler registration, and leaves a dangling handler; while both live, one message is answered twice. | Confirmed. |
-| C6 | `ContentBlockerHandler` async compile holds the raw handler (no cancellable); dispose before it finishes → use after free, then initial content is loaded on a freed view. | Confirmed. |
-| C7 | Custom schemes register on the shared `WebKitWebContext` with raw `this`; the last view wins, and disposing it leaves a dangling handler. | **Reproduced as broken (X-4)**: a second view's scheme request returns null. No crash seen in that run. |
-| C8 | GTK color, date and file dialogs keep the raw view; the destructor never closes them (the hide functions refuse within 200 ms of showing, and the color one is a no-op). Answer the dialog after dispose → use after free. | Confirmed. |
-| C9 | `loadData`/`loadFile`/`postUrl`/`reloadFromOrigin` (also called from the constructor) spin `while (g_main_context_iteration(NULL, FALSE))`. Any pending event runs inside a method call, including dispose of this same view, then the code continues on `this`. `pasteFromClipboard` does the same through `gtk_clipboard_wait_for_text`. | Confirmed (re-entrancy); crash not reproduced. |
-| C10 | `OnLoadFailedWithTlsErrors` reads `failing_uri` (valid only during the signal) in the async proceed callback. `postUrl` uses a raw `this` in a 100 ms timeout. `SetOnFrameAvailable` passes an unreferenced `WPEToplevel*` to an idle. | Confirmed. |
-| C11 | EGL: `GetCurrentEglImage` returns the image handle after dropping the lock; the texture binds it later on the raster thread while the main thread may destroy it on the next frame. Not the shipped path (SHM copy on this VM). | Confirmed by reading both files. |
+| C1 | **The Telosnex abort.** With legacy FDO, the exportable gets a raw `InAppWebView*` as client data. WebKit destroys the exportable only when it frees the backend. `~InAppWebView` only unrefs the `WebKitWebView`. Anything else that holds a reference keeps the view alive, for example a pending `evaluate_javascript` task. The next frame then runs `OnExportShmBuffer` on freed memory. | **ASan** (C1): use in `OnExportShmBuffer`. Red in a normal build. Same frames as the Telosnex abort. |
+| C1b | The fullscreen handler gets the same raw pointer. | **ASan** (C1b): use in `OnDomFullscreenRequest`. |
+| C1c | The pointer-lock handler gets the same raw pointer. | **ASan** (C1c), but the report shows the C1 frame path. The test does not isolate the pointer-lock path. |
+| C2 | **Page JS stops the host app.** Page JS can call internal bridge handlers (see S2). `onWebMessagePortMessageReceived` and `onWebMessageListenerPostMessageReceived` call `byte.get<int>()` on page data. The code catches only `json::parse_error`. A `type_error` leaves a GSignal callback and calls `std::terminate`. | **Red** (C2, C2b): `terminate called after throwing ... type_error.302`, SIGABRT. |
+| C3 | **A download crashes the app when `useOnDownloadStart` is on.** There is no `decide-destination` handler. WebKit saves the file to `~/Downloads` about 2 ms after `download-started`. When Dart answers, the plugin calls `webkit_download_cancel` on the finished download, and WebKit crashes. "Cancel" also never works, because the file is already on disk. One view is enough. | **Red** (C3): SIGSEGV in WebKit. |
+| C4 | Channel callbacks capture `self` or `&self->pending_*`. Flutter answers every platform message, also after dispose, and the callbacks have no cancellable. So each callback runs on a freed view. | See C4a to C4h. |
+| C4a | `shouldOverrideUrlLoading` answer after dispose. | **ASan**: use in the `OnShouldOverrideUrlLoadingDecision` lambda. |
+| C4b | `onNavigationResponse` answer after dispose. The lambda reads `self->settings_` only for a MIME type that WebKit cannot show. | **ASan**: use in the `OnDecidePolicy` lambda, from `WebViewChannelDelegate::onNavigationResponse`. Passes in a normal build. |
+| C4c | `confirm()` answer after dispose. | **ASan**: use in the `OnScriptDialog` confirm lambda. Red in a normal build. |
+| C4d | Permission answer after dispose. | **Blocked** by W18. |
+| C4e | HTTP auth answer after dispose. | **Blocked** by W16. |
+| C4f | TLS answer after dispose. | **Blocked** by W17. |
+| C4g | `onCreateWindow` answer after the opener is disposed. | Not reproduced (normal and ASan). |
+| C4h | `createWebMessageChannel` racing dispose. The completion of the JS call writes `web_message_channels_` through a raw `self`. | **ASan**: write from the `evaluateJavascript` completion. Passes in a normal build. |
+| C5 | `UserContentController` connects `script-message-with-reply-received::callHandler` with a raw `this` and never disconnects it. A popup shares the content manager of its opener. When the popup is destroyed, it removes the scripts and the handler of the opener and leaves a dangling handler. | **Blocked** by W19: the popup never gets a bridge. |
+| C5b | (Withdrawn.) A handled popup stays in the manager after its opener is disposed. | Not reproduced. The hooks show no leaked `WebKitWebView`. |
+| C6 | `ContentBlockerHandler` compiles rules asynchronously and holds a raw handler with no cancellable. Dispose before the compile ends gives a use after free. Then the code loads initial content on the freed view. | **ASan**: read of freed memory at `content_blocker_handler.cc:319` (`handler->filter_store_`). The free stack that ASan prints is inside the WebKit rule compiler, so the report does not show which object was freed. Red in a normal build. |
+| C7 | Custom schemes register on the shared `WebKitWebContext` with a raw `this`. The last view to register wins. Dispose of that view leaves a dangling handler. | **Red**: the second view gets `null` instead of its own response. No crash. |
+| C8a | The GTK color dialog keeps a raw view. The destructor does not close it. | **ASan**: use in `OnColorDialogResponse`. Red in a normal build. |
+| C8b | The date dialog: the same problem through `DateDialogContext`. | **ASan**: use in `OnDateDialogResponse`. Red in a normal build. |
+| C8c | The file chooser: the same problem. `HideFileChooser` also refuses to close a dialog less than 200 ms after it opened. | **ASan**: use in `OnFileChooserDialogResponse`. In a normal build, the test fails because the dialog stays open after dispose. |
+| C8d | A `<select>` popup that is open when the view is disposed. | **Red**: the app stops when the widget is removed, in both builds, with no ASan report. `C8d-control` does the same steps without the popup and passes. The cause is not known. |
+| C9a | `loadData`, `loadFile`, `postUrl` and `reloadFromOrigin` run `while (g_main_context_iteration(NULL, FALSE))`. A dispose of the same view can run inside this loop. Then the method continues on `this`. `pasteFromClipboard` has the same problem through `gtk_clipboard_wait_for_text`. | Not reproduced (normal and ASan). The re-entrancy is real in the code. |
+| C9b | `postUrl` uses a raw `this` in a 100 ms timeout. | **ASan**: use in the `postUrl` timeout. Red in a normal build. |
+| C10 | `OnLoadFailedWithTlsErrors` reads `failing_uri` in the asynchronous "proceed" callback. That pointer is valid only during the signal. | **Blocked** by W17. |
+| C11 | EGL: `GetCurrentEglImage` returns the image handle after it releases the lock. The raster thread binds the image later, and the main thread can destroy it on the next frame. The shipped path on this VM is the SHM copy, not EGL. | No test. Found by reading. |
+| C12 | `setSize` sends zero and negative sizes to WPE. | Not reproduced (normal and ASan). |
 
 ## 2. Security
 
-| # | What | Status |
+| # | What | Test result |
 |---|---|---|
-| S1 | `javaScriptHandlersOriginAllowList` is a substring match on "scheme://host[:port]". `https://example.com` admits `https://example.com.evil.test` and `https://example.com@evil.test`. | **Reproduced (X-3).** |
-| S2 | Page JS can spoof internal events (console messages, load-resource, print, ...) by calling internal handler names. | **Reproduced (X-2).** |
-| S3 | `_windowId` comes from a page-writable global and picks the target view: a page can route bridge events into another window's Dart side. | Confirmed by reading. |
-| S4 | Origin is the top-level page, not the sending frame; `_isMainFrame` comes from the message body. Iframe permission requests are attributed to the top page. | Confirmed. |
-| S5 | Page JS can open native GTK color and date dialogs with no user gesture (`_onColorInputClicked` / `_onDateInputClicked`). | Confirmed. |
-| S6 | `OnExportShmBuffer` trusts the web process's stride and size (stride < width*4 → out-of-bounds read in the UI process). | Confirmed by reading. |
-| S7 | Bridge secret from `mt19937` seeded once by `random_device`: 2^32 possible secrets. | Confirmed by reading. |
-| S8 | URL and CSS injection helpers splice values into JS strings with incomplete escaping. | Confirmed by reading. |
+| S1 | `javaScriptHandlersOriginAllowList` is a substring match on `scheme://host[:port]`. | **Red**: with the allow list `https://example.com`, these pages reach the handler: `https://example.com.evil.test` (S1), `https://example.com@evil.test` (S1b), `https://example.com:8443` (S1c). `S1-control` passes. |
+| S2 | Page JS can fake internal events by calling internal handler names, for example a console message. | **Red**. |
+| S3 | `_windowId` comes from a global that the page can write. It selects the target view, so a page can send bridge events to the Dart side of a different window. | Passes now, but only because popups do not work (W19). The test becomes live after W19 is fixed. |
+| S4a | The permission origin is the full page URL with path and query, not the origin. | **Blocked** by W18. |
+| S4b | A permission request from a cross-origin iframe has the origin of the top page. | **Blocked** by W18. |
+| S5 | Page JS can open native GTK color and date dialogs with no user gesture. | **Red**. |
+| S6 | `OnExportShmBuffer` trusts the stride and size from the web process. A stride less than `width*4` gives an out-of-bounds read in the UI process. | No test. Found by reading. |
+| S7 | The bridge secret comes from `mt19937`, seeded once by `random_device`. There are only 2^32 possible secrets. | No test. Found by reading. |
+| S8a | `injectJavascriptFileFromUrl` puts the URL into a JS string with no escaping. A quote in the URL runs page-level code. | **Red**. |
+| S8d | `injectCSSFileFromUrl` has the same problem. | **Red**. |
+| S9 | No code sets `pointer_lock_handler_`, so `OnPointerLockRequest` accepts every request. | Inconclusive. A real click reaches the page, but neither `pointerlockchange` nor `pointerlockerror` occurs. |
 
 ## 3. Wrong behavior
 
-- Custom and stock context-menu items share one id space: a custom item with id 1 also opens the link, 10 goes back, 13 reloads (Confirmed).
-- `download-started` is connected on the shared network session by every view, so every view's handler runs for every download; a view with downloads off cancels others' (Confirmed; the crash in C3 happens even with one view).
-- JS `alert` handled by the client is never closed: `alert()` never returns (Likely; check the Dart contract).
-- `<input type=week>` uses the calendar year with the ISO week (wrong at year edges) (Confirmed).
-- `loadUrl(URLRequest)` drops method and body; `postUrl` corrupts bytes ≥ 0x80 and forces form-urlencoded; `loadFile` does not percent-encode the path (Confirmed).
-- `shouldOverrideUrlLoading`/`onLoadError` always report GET and guess main frame; cancellations are reported as errors (Confirmed).
-- `setSettings` ignores runtime changes to bridge and interception settings (Confirmed).
-- Ctrl+C/X/V/A/Z/Y key-downs are swallowed and replaced with editing commands; Shift and non-Latin layouts do not match (Confirmed; check what keysym Dart sends).
-- `takeScreenshot` feeds straight RGBA to premultiplied Cairo, and has no pixels in zero-copy EGL mode (Confirmed by reading).
-- `incognito` leaks one ephemeral network session per view; `getCopyBackForwardList` leaks two lists; context-menu downloads leak; date dialogs leak their context (Confirmed).
+| # | What | Test result |
+|---|---|---|
+| W1 | Custom and stock context-menu items share one id space. A custom item with id 12 (`WEBKIT_CONTEXT_MENU_ACTION_RELOAD`) also reloads the page. | **Red**: the page loads twice. |
+| W1b | The int id of a custom context-menu item returns to Dart as a String. | **Red**: `['4242']`, not `[4242]`. |
+| W2a | Every view connects `download-started` on the shared network session. A view with downloads off cancels the downloads of other views. | The test crashes before its check. The test cancels a download, as C3 does, so the crash is probably C3. Retest after C3 is fixed. |
+| W3a | An `alert()` that the client handles is never closed, so `alert()` never returns. | **Red**: the page stays blocked. |
+| W3b | `confirm()` answers are inverted. Dart `JsConfirmResponseAction` has `CONFIRM=0, CANCEL=1`. The native enum has `CANCEL=0, CONFIRM=1`. | **Red**: CONFIRM gives `false`. |
+| W3c | `prompt()` has the same inversion. | **Red**: CONFIRM gives `null`. |
+| W3d | The `beforeunload` answer of the client has no effect. | **Red**: the client said "stay", and the page navigated. |
+| W4 | `<input type=week>` uses the calendar year with the ISO week. | **Red**: 2024-12-30 gives `2024-W01`, not `2025-W01`. |
+| W5a | `loadUrl(URLRequest)` drops the method and the body. | **Red**: the server gets GET. |
+| W5b | `postUrl` sends the body through XHR as a JS string. Bytes from 0x80 change to UTF-8. | **Red**: 6 bytes arrive as 9. |
+| W5c | `loadFile` does not percent-encode the path. | **Red**: an asset in `review #dir/` does not load. |
+| W6a | `shouldOverrideUrlLoading` always reports GET. | **Red** for a form POST. |
+| W6b | The main-frame flag is a guess from the target frame name. | **Red**: an unnamed iframe is reported as the main frame. |
+| W6c | `stopLoading` is reported as an error. | **Red**: `Load request cancelled`. |
+| W7 | `setSettings` ignores a runtime change to `javaScriptBridgeEnabled`. | **Red**: the bridge stays after a reload. |
+| W8 | Ctrl+A key-down never reaches the page. The plugin replaces it with an editing command. | **Red**: the page sees `C-Control` and `b`, not `C-a`. |
+| W8b | (Withdrawn.) Ctrl+Shift+Z does not redo. | Not reproduced. Redo works. |
+| W9 | (Withdrawn.) `takeScreenshot` gives wrong colors for translucent pixels. | Not reproduced. An opaque pixel and a 50% red pixel are both correct. The zero-copy EGL mode still has no screenshot pixels (found by reading). |
+| W10 | Each incognito view leaks one ephemeral `WebKitNetworkSession`. | **Red**: 3 views leave 3 live sessions. |
+| W11 | `getCopyBackForwardList` reads the back list of WebKit as oldest-first. WebKit gives it nearest-first. | **Red**: `['/two', '/one', '/three']`. |
+| W12 | With `javaScriptCanOpenWindowsAutomatically` off, `window.open` loads the popup URL in the current view. | **Red**: the opener navigates away. |
+| W13 | A custom-scheme response with an empty body is reported as "not found". | **Red**: `fetch` fails. |
+| W15 | (Withdrawn.) Control characters in an error, and a BigInt result, break `evaluateJavascript`. | Not reproduced. |
+| W16 | **HTTP auth never works.** Native code sends `previousFailureCount` as null. `HttpAuthenticationChallenge.fromMap` requires an int and throws, so the plugin cancels. `HttpAuthResponseAction` also has no native values for Linux. | **Red**: `onReceivedHttpAuthRequest` never runs, and every 401 page fails. |
+| W17 | **TLS errors never reach the app.** Native code sends `SslError.code` as a String. Dart requires an int, so the plugin cancels. | **Red**: `onReceivedServerTrustAuthRequest` never runs. |
+| W18 | **Every permission request is denied.** In `flutter_inappwebview_platform_interface` 1.4.0-beta.3, `PermissionResourceType` has native values only for Windows. On Linux, `fromNativeValue` returns null and the event throws. The fix can be in that package or in the values that Linux sends. | **Red**: `onPermissionRequest` never runs, and `Notification.requestPermission()` gives `denied`. |
+| W19 | **Popups never work.** `OnCreateWebView` stores the popup by `windowId` in the manager. No code reads `windowId` when Dart creates the popup view. The popup is a new, unrelated, empty view, and `window.open` returns `null` to the page. | **Red**. |
+| W21 | (Withdrawn.) A second color picker leaves the first promise unsettled. | Not reproduced. |
+| W22 | `callAsyncJavaScript` puts argument keys into `const {...}` without a check. A key that is not a JS identifier is a SyntaxError. | **Red** with the key `my-key`. |
+| W23 | `addWebMessageListener` splits an allowed-origin rule at the first `:`, so an IPv6 rule fails. | **Red** with `http://[::1]:<port>`. |
+| W24 | A context-menu "Download Linked File" leaks one `WebKitDownload`. `webkit_web_view_download_uri` returns a new reference that the code never releases. | **Red**: one live `WebKitDownload` remains. |
+| S8b | (Moved from section 2.) `injectCSSCode` escapes only `'` and `\n`, not `\`. Valid CSS with an escaped quote becomes a JS syntax error, and the CSS is dropped. An offline check showed that this cannot run code: every break-out leaves an unpaired quote. | **Red**: the CSS does not apply. |
+| S8c | (Moved from section 2.) CSS with `\r` is a JS syntax error, and the CSS is dropped. | **Red**. |
+
+W14 is withdrawn. It came from a misreading of the listener code.
 
 ## 4. Fix plan for C1 (the Telosnex crash)
 
-1. Give the WPE callbacks a small heap handle (`struct Link { InAppWebView* view; }`) instead of `this`; the destructor sets `view = nullptr`, and the backend's destroy-notify frees the handle. With `view == nullptr` the export callbacks release the buffer and dispatch frame-complete, then return; the fullscreen and pointer-lock handlers ignore the request.
-2. Own a `GCancellable` per view; pass it to `evaluate_javascript` / `call_async_javascript_function` and cancel it in the destructor (shortens the window, does not replace step 1).
-3. Same handle approach for C4 (channel callbacks), C5, C6, C7 and C8 in follow-ups; C2 and C3 are small, separate fixes.
+1. Give the WPE callbacks a small heap handle (`struct Link { InAppWebView* view; }`) instead of `this`. The destructor sets `view = nullptr`. The destroy-notify of the backend frees the handle. When `view == nullptr`, the export callbacks release the buffer, send frame-complete, and return. The fullscreen and pointer-lock handlers ignore the request.
+2. Give each view a `GCancellable`. Pass it to `evaluate_javascript` and `call_async_javascript_function`, and cancel it in the destructor. This makes the window shorter. It does not replace step 1.
+3. Use the same handle approach in follow-ups for C4, C5, C6, C7, C8 and C9b. C2 and C3 are small, separate fixes.
 
-KI-1 is the red test for step 1. It should pass after the fix, with the rest of the file unchanged.
+C1, C1b and C1c are the red tests for steps 1 and 2. They must pass after the fix in the ASan build.
+
+Fix W16, W17, W18 and W19 early. They block C4d, C4e, C4f, C5, C10, S3, S4a and S4b. Until they are fixed, those tests cannot reach the code that they check.
+
+## 5. Findings without a test
+
+Found by reading. No test, because the result is hard to observe from Dart, or because the item is small. Line numbers are at `4ff1c5407`.
+
+### Lifetime
+
+- `copyToClipboard` and `cutToClipboard`: the `getSelectedText` callback captures a raw `this`.
+- External JS-handler replies capture a raw `targetWebView` and call `ResolveInternalHandlerWithReply` on it after Dart answers. These methods use no members, so make them static.
+- `OnCreateWebView` default behaviour captures the raw `WebKitWebView*` of the opener (C4g tests this path and did not reproduce).
+- `pasteFromClipboard` and `pasteAsPlainText` run a nested main loop in `gtk_clipboard_wait_for_text`. A dispose can run inside it. A clipboard owner that does not answer freezes the UI.
+- WPEPlatform only: `SetOnFrameAvailable` passes a `WPEToplevel*` without a reference to `g_idle_add`.
+- `gtk_window_` is a cached raw pointer. If the GTK window is finalized first (shutdown order), the destructor disconnects signals on a dead object.
+- With legacy FDO, if the exportable or backend creation fails, `webview_` stays null. Not every public method checks for null.
+- Check: the `create` signal returns the WebKit view of the popup, and the `InAppWebView` in the manager owns its only reference. If the manager is null, the `unique_ptr` dies at the end of the scope and WebKit gets a freed view.
+- The texture fallback calls `CopyPixelBufferTo` on the raster thread through a raw `InAppWebView*`. The texture must be unregistered before the view is deleted.
+
+### Leaks and requests that are never answered
+
+- The destructor does not answer or release `pending_script_dialogs_`, `pending_permission_requests_` and `pending_auth_requests_`. The page promise never settles.
+- Response-policy decisions for `onNavigationResponse` are referenced but not tracked. If Dart never answers, or the view is disposed, they leak.
+- `pending_custom_scheme_requests_` is never used. A request that is not answered leaks its reference and the load hangs.
+- `getCopyBackForwardList` never frees the two lists from WebKit.
+- `ShowDatePicker` and `HideDatePicker` destroy the dialog without a response, so `DateDialogContext` leaks each time. `HideAllPopups` runs on every scroll, resize and load.
+- A second `<select>` while one is open overwrites `webkit_option_menu_`: the old reference leaks and the old menu stays open. The `close` signal of `WebKitOptionMenu` is not connected. The destructor does not close the menu.
+
+### Wrong behavior, small
+
+- The context-menu item "Copy Image" copies the image URI. "Open in New Window" items load in the current view.
+- The stock actions for spelling, font, outline and inspect end in `break` with a comment about a GAction fallback that never runs.
+- The context menu is placed at the global pointer position, not at the hit position. Wayland does not give a global position.
+- `SendKeyEvent` returns from the shortcut path before `current_modifiers_` is updated. Non-Latin layouts never match the shortcut table.
+- Legacy `SetCursorPos` truncates `x*scale` instead of rounding: 1 px drift at fractional scales.
+- `setSettings` compiles the content blockers again on every call, also when they did not change. `newSettingsMap` is not used.
+- `OnDomFullscreenRequest` sets and clears `waiting_fullscreen_notify_` in the same call, so the guard never blocks.
+- With a null SHM buffer, `OnExportShmBuffer` releases the buffer but does not send frame-complete, so rendering can stop.
+- `egl_import_failed_permanently` is a static for the whole process. One failure turns off EGL import for every view.
+- `ReadPixelsFromEglImage` needs a current GL context on the main thread, which is usually absent, so the readback is skipped. `glReadPixels` is also bottom-up.
+- `web_process_crashed_` is never read or written. After a web-process crash, the platform path keeps the old buffer and image bound to the texture.
+- `initializeWindowIdJS` sets the window id with a one-time evaluation, not a user script, so the next navigation of the popup loses it.
+- Popup creation params never set `plugin`, so `plugin_` is null in popups.
+- HTTP auth stores credentials with the libsecret protocol `http`, also for `https`. With PERMANENT persistence, the credentials are also stored in the WebKit store.
+- Paste goes through `execCommand('insertText')`, so the `paste` handlers of the page never run, and rich content is lost. Copy runs `navigator.clipboard.writeText` or a temporary `<textarea>` in the page.
+- Media pause, suspend and close act only on the top document. The suspend state is stored in a `data-was-playing` attribute that the page can see and change.
+- The color, date and cursor handlers act on `this`, not on the target view.
+- `addWebMessageListener` puts the scheme into JS without escaping. A second listener with the same name replaces the first without `dispose()`.
+- `JSON.stringify` that throws (cycles, BigInt) leaves an exception on the JSC context.
+- `ResolveInternalHandlerWithReply` creates a new `JSCContext` (a JS VM) for each reply and evaluates the JSON as code. A throw returns `undefined`, so the null fallback never runs.
+- `wpe_fdo_initialize_for_egl_display` and `eglInitialize` run once per view.
+- `GetDmaBufFd` always returns false.
+- `loadData` and the other load methods log "called while loading" on every call, also when idle.
+
+### Comments that are wrong
+
+- "Called from WPE's thread" on the FDO export callbacks and `ReadPixelsFromEglImage`. The FDO callbacks run on the main `GMainContext`.
+- `SetupMonitorChangeHandlers` says `monitors-changed`. The code connects `monitor-added` and `monitor-removed`.
+- Platform `SetCursorPos` says "Scale to physical pixels" but passes logical coordinates.
+
+### Checked and correct
+
+- The triple pixel buffer is safe: the reader holds `buffer_swap_mutex_` for the whole copy.
+- The stride handling in `ConvertARGB32ToRGBA` and `GetPixelBufferSize` is correct (`data.size()` over-allocates only).
+- `saveState` and `restoreState`, the context-menu references, the hit-test references, the proposed-credential frees and `saveWebArchive` are balanced.
+- `select_files` with `file://` URIs is correct.
+
+## 6. Open questions
+
+1. **Backend.** The shipped Snap (x6) uses legacy WPEBackend-fdo. `WEBKIT_HAS_WPE_PLATFORM_API` is empty in its CMake cache, but the bundled WPE SDK has WPEPlatform (`wpe-platform-2.0.pc`). Is legacy intended, or does the CMake check fail? C1 is legacy only, and all tests ran on legacy. Read the `WEBKIT_HAS_WPE_PLATFORM_API` check in `linux/CMakeLists.txt` and its history first.
+2. **Owner: where fixes go.** The fork only, or also upstream PRs to `flutter_inappwebview`?
+3. **Owner: W18.** Fix in `flutter_inappwebview_platform_interface`, or work around it on the Linux side?
+4. **Owner: scope.** C1 only first, or C1 and W16 to W19 together?
+

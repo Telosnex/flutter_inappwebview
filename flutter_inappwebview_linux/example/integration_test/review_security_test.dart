@@ -91,6 +91,46 @@ void main() {
     }
   });
 
+  // S2 control: real console messages and color inputs still reach Dart,
+  // otherwise S2 and S5 pass for the wrong reason.
+  testWidgets('S2-control real console messages still arrive', (tester) async {
+    await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+    final t = await TestView.start(tester);
+    try {
+      await t.js("console.log('real-message'); true;");
+      await waitFor(
+        tester,
+        () => t.console.contains('real-message'),
+        reason: 'console message',
+      );
+    } finally {
+      await t.dispose();
+    }
+  });
+
+  // S5b. A click() from page JS is not a user gesture either.
+  testWidgets('S5b scripted click does not open the color dialog', (
+    tester,
+  ) async {
+    await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+    if (await skipWithoutHooks()) return;
+    final t = await TestView.start(
+      tester,
+      html: '<!doctype html><input type="color" id="c">',
+    );
+    try {
+      await t.js("document.getElementById('c').click(); true;");
+      await settle(tester, const Duration(seconds: 1));
+      final open = await Hooks.dialogs();
+      for (final kind in open) {
+        await Hooks.respond(kind, ok: false);
+      }
+      expect(open, isEmpty);
+    } finally {
+      await t.dispose();
+    }
+  });
+
   // S3. _windowId comes from the message body (page-writable global), and
   // picks the target view. Today the target popup has no channel (W19), so
   // nothing reaches Dart and this passes; once popups work it is live. A page in one view routes a JS-handler call

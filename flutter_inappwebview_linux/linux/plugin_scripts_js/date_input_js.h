@@ -145,6 +145,7 @@ class DateInputJS {
     icon.addEventListener('click', function(event) {
       event.preventDefault();
       event.stopPropagation();
+      if (!event.isTrusted) return;  // Only a real user action (S5).
       openDatePicker(input, event);
     }, true);
 
@@ -156,6 +157,7 @@ class DateInputJS {
       if (clickX > rect.right - 30) {
         event.preventDefault();
         event.stopPropagation();
+        if (!event.isTrusted) return;  // Only a real user action (S5).
         openDatePicker(input, event);
       }
       // Otherwise let the user type in the field

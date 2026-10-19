@@ -91,6 +91,56 @@ window.)JS" +
   }
 
   /**
+   * Defines a function that only plugin scripts can call. It sends internal
+   * events (console, dialogs, cursor, ...) with a second secret. Page JS
+   * cannot call it: its name is a random global lexical binding, which is
+   * not a window property and cannot be enumerated.
+   */
+  static std::string INTERNAL_CALL_JS_SOURCE(const std::string& functionName,
+                                             const std::string& bridgeSecret,
+                                             const std::string& internalSecret) {
+    return "const " + functionName + R"JS( = (function(window) {
+  try {
+    var stringify = window.JSON.stringify;
+    var slice = window.Array.prototype.slice;
+    var apply = window.Reflect.apply;
+    var handler = window.webkit.messageHandlers['callHandler'];
+    var post = handler.postMessage;
+    return function() {
+      var _windowId = )JS" + WINDOW_ID_VARIABLE_JS_SOURCE() + R"JS(;
+      return apply(post, handler, [{
+        'handlerName': arguments[0],
+        '_bridgeSecret': ')JS" + bridgeSecret + R"JS(',
+        '_internalSecret': ')JS" + internalSecret + R"JS(',
+        'args': stringify(apply(slice, arguments, [1])),
+        '_windowId': _windowId,
+        '_isMainFrame': (window.top === window)
+      }]);
+    };
+  } catch (_) {
+    return function() { return Promise.resolve(null); };
+  }
+})(window);
+)JS";
+  }
+
+  /**
+   * Rewrites calls from plugin script sources to the internal call function.
+   */
+  static std::string INTERNALIZE_CALLS(std::string source, const std::string& functionName) {
+    for (const std::string& from : {"window." + get_JAVASCRIPT_BRIDGE_NAME() + ".callHandler(",
+                                    get_JAVASCRIPT_BRIDGE_NAME() + ".callHandler(",
+                                    std::string("bridge.callHandler(")}) {
+      size_t pos = 0;
+      while ((pos = source.find(from, pos)) != std::string::npos) {
+        source.replace(pos, from.size(), functionName + "(");
+        pos += functionName.size() + 1;
+      }
+    }
+    return source;
+  }
+
+  /**
    * JavaScript to dispatch the platform ready event.
    */
   static std::string PLATFORM_READY_JS_SOURCE() {

@@ -150,6 +150,32 @@ std::string GenerateRandomSecret(size_t length = 32) {
 // Key for the InAppWebView* stored on its WebKitWebView.
 constexpr const char* kViewDataKey = "flutter-inappwebview-view";
 
+// "scheme://host[:port]" of a URL, as the browser defines it. Userinfo,
+// path and query are not part of it. Empty for URLs with no origin.
+std::string OriginOfUrl(const std::string& url) {
+  WebKitSecurityOrigin* origin = webkit_security_origin_new_for_uri(url.c_str());
+  if (origin == nullptr) return "";
+  gchar* str = webkit_security_origin_to_string(origin);
+  std::string result = str != nullptr ? str : "";
+  g_free(str);
+  webkit_security_origin_unref(origin);
+  return result;
+}
+
+// A JS string literal for any text: quotes, backslashes and line breaks
+// are escaped.
+std::string JsStringLiteral(const std::string& text) {
+  std::string out = json(text).dump(-1, ' ', false, json::error_handler_t::replace);
+  // JSON allows U+2028 and U+2029 in strings; older JS does not.
+  for (const char* sep : {"\xE2\x80\xA8", "\xE2\x80\xA9"}) {
+    size_t pos = 0;
+    while ((pos = out.find(sep, pos)) != std::string::npos) {
+      out.replace(pos, 3, sep[2] == '\xA8' ? "\\u2028" : "\\u2029");
+    }
+  }
+  return out;
+}
+
 #ifdef HAVE_WPE_BACKEND_LEGACY
 // Get the directory where the executable is located (only needed for legacy backend)
 static std::string GetExecutableDir() {
@@ -242,6 +268,8 @@ InAppWebView::InAppWebView(FlPluginRegistrar* registrar, FlBinaryMessenger* mess
     : plugin_(params.plugin), registrar_(registrar), messenger_(messenger), gtk_window_(params.gtkWindow), fl_view_(params.flView), manager_(params.manager), id_(id), settings_(params.initialSettings),
       initial_user_scripts_(params.initialUserScripts) {
   js_bridge_secret_ = GenerateRandomSecret();
+  js_internal_secret_ = GenerateRandomSecret();
+  js_internal_call_name_ = "_fiw_" + GenerateRandomSecret();
   js_cancellable_ = g_cancellable_new();
   
   if (params.windowId.has_value()) {
@@ -1116,40 +1144,48 @@ void InAppWebView::PrepareAndAddUserScripts() {
   auto jsBridgeScript = JavaScriptBridgeJS::JAVASCRIPT_BRIDGE_JS_PLUGIN_SCRIPT(
       js_bridge_secret_, javaScriptBridgeOriginAllowList, javaScriptBridgeForMainFrameOnly);
   user_content_controller_->addPluginScript(std::move(jsBridgeScript));
+  // The internal call function is a separate script: if it ever runs twice
+  // in one realm, only its own `const` fails, not the bridge.
+  user_content_controller_->addPluginScript(std::make_unique<PluginScript>(
+      "InternalCall",
+      JavaScriptBridgeJS::INTERNAL_CALL_JS_SOURCE(js_internal_call_name_, js_bridge_secret_,
+                                                  js_internal_secret_),
+      UserScriptInjectionTime::atDocumentStart, javaScriptBridgeForMainFrameOnly,
+      javaScriptBridgeOriginAllowList));
 
   // === Add Console Log Interception Script ===
   // Note: Console log is always for main frame only to avoid issues
   // (see https://github.com/pichillilorenzo/flutter_inappwebview/issues/1738)
   auto consoleLogScript = ConsoleLogJS::CONSOLE_LOG_JS_PLUGIN_SCRIPT(pluginScriptsOriginAllowList);
-  user_content_controller_->addPluginScript(std::move(consoleLogScript));
+  AddInternalPluginScript(std::move(consoleLogScript));
 
   // === Add Color Input Interception Script ===
   // WPE WebKit doesn't have the run-color-chooser signal, so we handle <input type="color">
   // via JavaScript interception
   auto colorInputScript =
       ColorInputJS::COLOR_INPUT_JS_PLUGIN_SCRIPT(pluginScriptsOriginAllowList, pluginScriptsForMainFrameOnly);
-  user_content_controller_->addPluginScript(std::move(colorInputScript));
+  AddInternalPluginScript(std::move(colorInputScript));
 
   // === Add Date Input Interception Script ===
   // WPE WebKit doesn't have date picker support, so we handle <input type="date/time/etc.>
   // via JavaScript interception
   auto dateInputScript =
       DateInputJS::DATE_INPUT_JS_PLUGIN_SCRIPT(pluginScriptsOriginAllowList, pluginScriptsForMainFrameOnly);
-  user_content_controller_->addPluginScript(std::move(dateInputScript));
+  AddInternalPluginScript(std::move(dateInputScript));
 
   // === Add Cursor Detection Script ===
   // WPE WebKit renders offscreen so we detect cursor style via JavaScript
   // This script handles CSS cursor detection and intelligent "auto" cursor resolution
   auto cursorDetectionScript =
       CursorDetectionJS::CURSOR_DETECTION_JS_PLUGIN_SCRIPT(pluginScriptsOriginAllowList, pluginScriptsForMainFrameOnly);
-  user_content_controller_->addPluginScript(std::move(cursorDetectionScript));
+  AddInternalPluginScript(std::move(cursorDetectionScript));
 
   // === Add OnLoadResource Script ===
   // Uses PerformanceObserver API to track resource loading
   if (settings_ != nullptr && settings_->useOnLoadResource) {
     auto onLoadResourceScript = OnLoadResourceJS::ON_LOAD_RESOURCE_JS_PLUGIN_SCRIPT(
         pluginScriptsOriginAllowList, pluginScriptsForMainFrameOnly);
-    user_content_controller_->addPluginScript(std::move(onLoadResourceScript));
+    AddInternalPluginScript(std::move(onLoadResourceScript));
   }
 
   // === Add AJAX Request Interception Script ===
@@ -1160,7 +1196,7 @@ void InAppWebView::PrepareAndAddUserScripts() {
         pluginScriptsForMainFrameOnly,
         settings_->useOnAjaxReadyStateChange,
         settings_->useOnAjaxProgress);
-    user_content_controller_->addPluginScript(std::move(ajaxInterceptScript));
+    AddInternalPluginScript(std::move(ajaxInterceptScript));
   }
 
   // === Add Fetch Request Interception Script ===
@@ -1168,7 +1204,7 @@ void InAppWebView::PrepareAndAddUserScripts() {
   if (settings_ != nullptr && settings_->useShouldInterceptFetchRequest) {
     auto fetchInterceptScript = InterceptFetchRequestJS::INTERCEPT_FETCH_REQUEST_JS_PLUGIN_SCRIPT(
         pluginScriptsOriginAllowList, pluginScriptsForMainFrameOnly);
-    user_content_controller_->addPluginScript(std::move(fetchInterceptScript));
+    AddInternalPluginScript(std::move(fetchInterceptScript));
   }
 
   // === Add Print Interception Script ===
@@ -1176,7 +1212,7 @@ void InAppWebView::PrepareAndAddUserScripts() {
   // via JavaScript and notify the Dart side
   auto printInterceptionScript = PrintInterceptionJS::PRINT_INTERCEPTION_JS_PLUGIN_SCRIPT(
       pluginScriptsOriginAllowList, pluginScriptsForMainFrameOnly);
-  user_content_controller_->addPluginScript(std::move(printInterceptionScript));
+  AddInternalPluginScript(std::move(printInterceptionScript));
 
   // TODO: Add additional plugin scripts as needed:
   // - FindTextHighlightJS
@@ -2195,34 +2231,21 @@ void InAppWebView::injectJavascriptFileFromUrl(const std::string& urlFile) {
   std::string script =
       "(function() {"
       "  var script = document.createElement('script');"
-      "  script.src = '" +
-      urlFile +
-      "';"
+      "  script.src = " +
+      JsStringLiteral(urlFile) +
+      ";"
       "  document.head.appendChild(script);"
       "})();";
   evaluateJavascript(script, std::nullopt, nullptr);
 }
 
 void InAppWebView::injectCSSCode(const std::string& source) {
-  // Escape single quotes and newlines in CSS
-  std::string escaped_source = source;
-  size_t pos = 0;
-  while ((pos = escaped_source.find("'", pos)) != std::string::npos) {
-    escaped_source.replace(pos, 1, "\\'");
-    pos += 2;
-  }
-  pos = 0;
-  while ((pos = escaped_source.find("\n", pos)) != std::string::npos) {
-    escaped_source.replace(pos, 1, "\\n");
-    pos += 2;
-  }
-
   std::string script =
       "(function() {"
       "  var style = document.createElement('style');"
-      "  style.textContent = '" +
-      escaped_source +
-      "';"
+      "  style.textContent = " +
+      JsStringLiteral(source) +
+      ";"
       "  document.head.appendChild(style);"
       "})();";
   evaluateJavascript(script, std::nullopt, nullptr);
@@ -2233,9 +2256,9 @@ void InAppWebView::injectCSSFileFromUrl(const std::string& urlFile) {
       "(function() {"
       "  var link = document.createElement('link');"
       "  link.rel = 'stylesheet';"
-      "  link.href = '" +
-      urlFile +
-      "';"
+      "  link.href = " +
+      JsStringLiteral(urlFile) +
+      ";"
       "  document.head.appendChild(link);"
       "})();";
   evaluateJavascript(script, std::nullopt, nullptr);
@@ -2348,8 +2371,9 @@ void InAppWebView::addWebMessageListener(const std::string& jsObjectName,
   allowedOriginRulesJs += "]";
 
   // Create the JavaScript to inject
-  std::string jsSource = WebMessageListenerJS::createWebMessageListenerInjectionJs(
-      jsObjectName, allowedOriginRulesJs);
+  std::string jsSource = JavaScriptBridgeJS::INTERNALIZE_CALLS(
+      WebMessageListenerJS::createWebMessageListenerInjectionJs(jsObjectName, allowedOriginRulesJs),
+      js_internal_call_name_);
 
   // Create a user script for this web message listener
   // We use a unique group name to allow removal if needed
@@ -2384,7 +2408,8 @@ void InAppWebView::createWebMessageChannel(
                           std::to_string(++channel_counter);
 
   // Create the JavaScript to create the MessageChannel
-  std::string js = WebMessageChannelJS::createWebMessageChannelJs(channelId);
+  std::string js = JavaScriptBridgeJS::INTERNALIZE_CALLS(
+      WebMessageChannelJS::createWebMessageChannelJs(channelId), js_internal_call_name_);
 
   // Capture variables for the callback
   InAppWebView* self = this;
@@ -2452,7 +2477,8 @@ void InAppWebView::postWebMessage(const std::string& messageData,
 void InAppWebView::setWebMessageCallback(const std::string& channelId, int portIndex) {
   if (webview_ == nullptr || channelId.empty()) return;
 
-  std::string js = WebMessageChannelJS::setWebMessageCallbackJs(channelId, portIndex);
+  std::string js = JavaScriptBridgeJS::INTERNALIZE_CALLS(
+      WebMessageChannelJS::setWebMessageCallbackJs(channelId, portIndex), js_internal_call_name_);
   evaluateJavascript(js, std::nullopt, nullptr);
 }
 
@@ -4595,7 +4621,7 @@ gboolean InAppWebView::OnPermissionRequest(WebKitWebView* web_view,
   std::optional<std::string> origin;
   const gchar* uri = webkit_web_view_get_uri(web_view);
   if (uri != nullptr) {
-    origin = std::string(uri);
+    origin = OriginOfUrl(uri);
   }
 
   auto permRequest = std::make_unique<PermissionRequest>(origin, resourceTypes);
@@ -7526,17 +7552,7 @@ bool InAppWebView::handleScriptMessageWithReply(const std::string& body, WebKitS
   const gchar* uri = webkit_web_view_get_uri(webview_);
   if (uri != nullptr) {
     requestUrl = std::string(uri);
-    try {
-      size_t schemeEnd = requestUrl.find("://");
-      if (schemeEnd != std::string::npos) {
-        size_t hostStart = schemeEnd + 3;
-        size_t hostEnd = requestUrl.find('/', hostStart);
-        if (hostEnd == std::string::npos) {
-          hostEnd = requestUrl.length();
-        }
-        sourceOrigin = requestUrl.substr(0, hostEnd);
-      }
-    } catch (...) {}
+    sourceOrigin = OriginOfUrl(requestUrl);
   }
 
   // === Security Check 3: Origin Allow List ===
@@ -7546,7 +7562,9 @@ bool InAppWebView::handleScriptMessageWithReply(const std::string& body, WebKitS
     if (!allowList.empty()) {
       isOriginAllowed = false;
       for (const auto& allowedOrigin : allowList) {
-        if (!sourceOrigin.empty() && sourceOrigin.find(allowedOrigin) != std::string::npos) {
+        // Exact origin match: scheme, host and port (S1).
+        if (allowedOrigin == "*" ||
+            (!sourceOrigin.empty() && sourceOrigin == OriginOfUrl(allowedOrigin))) {
           isOriginAllowed = true;
           break;
         }
@@ -7563,6 +7581,23 @@ bool InAppWebView::handleScriptMessageWithReply(const std::string& body, WebKitS
   std::string handlerName = "";
   if (bodyJson.contains("handlerName") && bodyJson["handlerName"].is_string()) {
     handlerName = bodyJson["handlerName"].get<std::string>();
+  }
+
+  // === Security Check 4: internal events come only from plugin scripts ===
+  static const std::set<std::string> kInternalHandlers = {
+      "onConsoleMessage", "onLoadResource", "onWebMessagePortMessageReceived",
+      "onWebMessageListenerPostMessageReceived", "onPrintRequest", "onFindResultReceived",
+      "_cursorChanged", "_onColorInputClicked", "_onDateInputClicked", "_onPrintRequest",
+      "shouldInterceptAjaxRequest", "onAjaxReadyStateChange", "onAjaxProgress",
+      "shouldInterceptFetchRequest"};
+  if (kInternalHandlers.count(handlerName) > 0) {
+    const bool internal = bodyJson.contains("_internalSecret") &&
+                          bodyJson["_internalSecret"].is_string() &&
+                          bodyJson["_internalSecret"].get<std::string>() == js_internal_secret_;
+    if (!internal) {
+      errorLog("InAppWebView: page JS called internal handler " + handlerName);
+      return false;
+    }
   }
 
   std::string argsJsonStr = "";
@@ -8336,6 +8371,11 @@ void InAppWebView::DisposeLateCallbacks() {
     }
   }
   opened_window_ids_.clear();
+}
+
+void InAppWebView::AddInternalPluginScript(std::unique_ptr<PluginScript> script) {
+  script->source = JavaScriptBridgeJS::INTERNALIZE_CALLS(script->source, js_internal_call_name_);
+  user_content_controller_->addPluginScript(std::move(script));
 }
 
 }  // namespace flutter_inappwebview_plugin

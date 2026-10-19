@@ -234,6 +234,9 @@ class ColorInputJS {
       event.stopPropagation();
       event.stopImmediatePropagation();
 
+      // Only a real user action opens the native dialog (S5).
+      if (!event.isTrusted) return;
+
       // Open our native color picker
       openColorPicker(target);
     }
@@ -254,6 +257,7 @@ class ColorInputJS {
       if (event.key === 'Enter' || event.key === ' ') {
         event.preventDefault();
         event.stopPropagation();
+        if (!event.isTrusted) return;
         openColorPicker(target);
       }
     }

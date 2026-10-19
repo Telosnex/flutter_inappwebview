@@ -77,6 +77,7 @@ namespace flutter_inappwebview_plugin {
 class InAppBrowser;
 class InAppWebViewManager;
 class PluginInstance;
+class PluginScript;
 class UserContentController;
 class WebMessageChannel;
 class WebMessageListener;
@@ -572,6 +573,10 @@ class InAppWebView {
 
   // JavaScript bridge secret for security
   std::string js_bridge_secret_;
+  // Second secret for internal events, held only by plugin scripts (S2).
+  std::string js_internal_secret_;
+  std::string js_internal_call_name_;
+  void AddInternalPluginScript(std::unique_ptr<PluginScript> script);
 
   // Window ID for multi-window support
   std::optional<int64_t> window_id_;

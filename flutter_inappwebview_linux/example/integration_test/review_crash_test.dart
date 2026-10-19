@@ -45,6 +45,49 @@ class Gate<T> {
   }
 }
 
+/// Shows [body] in a visible 600x400 view and taps it at [dx] from the
+/// center, so WebKit gets a trusted click.
+Future<void> pumpVisibleAndTap(
+  WidgetTester tester,
+  String body, {
+  double dx = 0,
+}) async {
+  final loaded = Completer<void>();
+  await tester.pumpWidget(
+    MaterialApp(
+      home: Scaffold(
+        body: SizedBox(
+          width: 600,
+          height: 400,
+          child: Builder(
+            builder: (context) => LinuxInAppWebViewWidget(
+              LinuxInAppWebViewWidgetCreationParams(
+                initialData: InAppWebViewInitialData(
+                  data: '<!doctype html><body style="margin:0">$body</body>',
+                  baseUrl: WebUri('https://example.com/'),
+                ),
+                onLoadStop: (_, _) {
+                  if (!loaded.isCompleted) loaded.complete();
+                },
+              ),
+            ).build(context),
+          ),
+        ),
+      ),
+    ),
+  );
+  final end = DateTime.now().add(const Duration(seconds: 20));
+  while (!loaded.isCompleted && DateTime.now().isBefore(end)) {
+    await tester.pump(const Duration(milliseconds: 16));
+    await Future<void>.delayed(const Duration(milliseconds: 16));
+  }
+  await settle(tester, const Duration(milliseconds: 500));
+  await tester.tapAt(
+    tester.getCenter(find.byType(SizedBox).last) + Offset(dx, 0),
+  );
+  await settle(tester, const Duration(seconds: 1));
+}
+
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
   setUp(LinuxInAppWebViewPlatform.registerWith);
@@ -589,22 +632,17 @@ void main() {
   // C8a. Color dialog answered after dispose: "response" handler gets raw
   // `this`; the destructor never closes the dialog.
   testWidgets('C8a color dialog answered after dispose', (tester) async {
-    await tester.pumpWidget(const MaterialApp(home: SizedBox()));
     if (await skipWithoutHooks()) return;
-    final t = await TestView.start(tester);
-    unawaited(
-      t
-          .js('''window.flutter_inappwebview.callHandler('_onColorInputClicked',
-  {currentColor: '#000000', elemRect: {x:0,y:0,width:10,height:10},
-   predefinedColors: [], alphaEnabled: false, colorSpace: 'limited-srgb'}); true;''')
-          .then((_) {}, onError: (_) {}),
+    // A real tap: page JS cannot open the dialog (S5).
+    await pumpVisibleAndTap(
+      tester,
+      '<input type="color" style="width:100vw;height:100vh">',
     );
-    await settle(tester, const Duration(seconds: 1));
     expect(await Hooks.dialogs(), contains('color'));
-    await t.dispose();
+    await tester.pumpWidget(const MaterialApp(home: SizedBox()));
     await settle(tester, const Duration(milliseconds: 300));
-    // Correct: dispose closed the dialog. Today it stays open; answering it
-    // runs the handler on the freed view.
+    // Correct: dispose closed the dialog. Answering an open one would run
+    // the handler on the freed view.
     final stillOpen = (await Hooks.dialogs()).contains('color');
     if (stillOpen) await Hooks.respond('color', color: '#00ff00');
     await settle(tester, const Duration(seconds: 1));
@@ -614,19 +652,16 @@ void main() {
 
   // C8b. Date dialog: same, through the DateDialogContext's raw view.
   testWidgets('C8b date dialog answered after dispose', (tester) async {
-    await tester.pumpWidget(const MaterialApp(home: SizedBox()));
     if (await skipWithoutHooks()) return;
-    final t = await TestView.start(tester);
-    unawaited(
-      t
-          .js('''window.flutter_inappwebview.callHandler('_onDateInputClicked',
-  {inputType: 'date', currentValue: '2024-05-05', minValue: '', maxValue: '', step: '',
-   elemRect: {x:0,y:0,width:10,height:10}}); true;''')
-          .then((_) {}, onError: (_) {}),
+    // The date script opens its dialog for a tap on the right 30 px.
+    await pumpVisibleAndTap(
+      tester,
+      '<input type="date" value="2024-05-05" '
+      'style="width:100vw;height:100vh;box-sizing:border-box">',
+      dx: 290,
     );
-    await settle(tester, const Duration(seconds: 1));
     expect(await Hooks.dialogs(), isNotEmpty);
-    await t.dispose();
+    await tester.pumpWidget(const MaterialApp(home: SizedBox()));
     await settle(tester, const Duration(milliseconds: 300));
     final stillOpen = (await Hooks.dialogs()).isNotEmpty;
     if (stillOpen) await Hooks.respond('', ok: true);

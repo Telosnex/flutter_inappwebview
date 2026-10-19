@@ -116,6 +116,15 @@ enum class WpePointerEventKind {
 // Pointer button type (matches Dart side)
 enum class WpePointerButton { None = 0, Primary = 1, Secondary = 2, Tertiary = 3 };
 
+#ifdef HAVE_WPE_BACKEND_LEGACY
+class InAppWebView;
+// See InAppWebView::backend_link_.
+struct WpeBackendLink {
+  InAppWebView* view = nullptr;
+  struct wpe_view_backend_exportable_fdo* exportable = nullptr;
+};
+#endif
+
 /// InAppWebView - WPE WebKit based implementation
 ///
 /// This class provides offscreen web rendering using WPE WebKit.
@@ -434,6 +443,10 @@ class InAppWebView {
   // Set the window ID for this webview (used in window.open scenarios)
   void setWindowId(int64_t windowId) { window_id_ = windowId; }
 
+  // The manager that stores popup views. Headless and InAppBrowser views have
+  // no manager_ of their own and use the plugin's InAppWebViewManager.
+  InAppWebViewManager* WindowManager() const;
+
   // Get the window ID (null if not set)
   std::optional<int64_t> getWindowId() const { return window_id_; }
 
@@ -490,6 +503,12 @@ class InAppWebView {
 
   // WPE FDO exportable (for DMA-BUF buffer export)
   struct wpe_view_backend_exportable_fdo* exportable_ = nullptr;
+
+  // Client data of the exportable and of the fullscreen and pointer-lock
+  // handlers. WebKit can keep the backend, and send frames to it, after this
+  // view is destroyed. The destructor sets `view` to null. The backend's
+  // destroy-notify frees the link together with the exportable.
+  WpeBackendLink* backend_link_ = nullptr;
   
   // Current EGL image from WPE (for zero-copy GPU texture sharing).
   ::wpe_fdo_egl_exported_image* exported_image_ = nullptr;
@@ -569,6 +588,10 @@ class InAppWebView {
   int64_t next_dialog_id_ = 0;
 
   // Pending permission requests
+  // Callbacks that Dart answers later hold a weak_ptr to this. When it has
+  // expired, the view is gone and the callback must not touch its members.
+  std::shared_ptr<int> lifetime_token_ = std::make_shared<int>(0);
+
   std::map<int64_t, WebKitPermissionRequest*> pending_permission_requests_;
   int64_t next_permission_id_ = 0;
 
@@ -602,6 +625,11 @@ class InAppWebView {
 
   // Disposing flag to prevent callbacks during destruction
   std::atomic<bool> is_disposing_{false};
+
+  // Cancels pending evaluate_javascript and call_async_javascript_function
+  // calls when the view is destroyed, so they release their reference to
+  // the WebKitWebView.
+  GCancellable* js_cancellable_ = nullptr;
 
   // Mouse state
   double cursor_x_ = 0;

@@ -79,7 +79,13 @@ if(WPE_PLATFORM_FOUND AND WPE_PLATFORM_HEADLESS_FOUND)
   # This happens when WPE WebKit is rebuilt without WPEPlatform support
   include(CheckCXXSourceCompiles)
   set(CMAKE_REQUIRED_INCLUDES ${WPE_WEBKIT_INCLUDE_DIRS} ${WPE_PLATFORM_INCLUDE_DIRS})
-  set(CMAKE_REQUIRED_LIBRARIES ${WPE_WEBKIT_LIBRARIES} ${WPE_PLATFORM_LIBRARIES})
+  # Use full library paths. *_LIBRARIES has bare names (-lWPEWebKit-2.0)
+  # without -L, which link only against a WebKit in the default search path.
+  # With the bundled SDK the check then always failed, and the build fell
+  # back to legacy FDO. -rpath-link lets the linker find the SDK's own
+  # dependencies (libwpe-1.0).
+  set(CMAKE_REQUIRED_LIBRARIES ${WPE_WEBKIT_LINK_LIBRARIES} ${WPE_PLATFORM_LINK_LIBRARIES})
+  set(CMAKE_REQUIRED_LINK_OPTIONS "LINKER:-rpath-link,${WPE_WEBKIT_LIBDIR}")
   check_cxx_source_compiles("
     #include <wpe/webkit.h>
     int main() {
@@ -88,6 +94,9 @@ if(WPE_PLATFORM_FOUND AND WPE_PLATFORM_HEADLESS_FOUND)
       return 0;
     }
   " WEBKIT_HAS_WPE_PLATFORM_API)
+  unset(CMAKE_REQUIRED_INCLUDES)
+  unset(CMAKE_REQUIRED_LIBRARIES)
+  unset(CMAKE_REQUIRED_LINK_OPTIONS)
   
   if(WEBKIT_HAS_WPE_PLATFORM_API)
     message(STATUS "flutter_inappwebview_linux: Found wpe-platform-2.0 (WPEPlatform API - DEFAULT)")

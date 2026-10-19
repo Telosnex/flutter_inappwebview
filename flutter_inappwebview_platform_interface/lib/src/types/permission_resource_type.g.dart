@@ -45,6 +45,7 @@ class PermissionResourceType {
   ///- iOS WKWebView 15.0+ ([Official API - WKMediaCaptureType.camera](https://developer.apple.com/documentation/webkit/wkmediacapturetype/camera))
   ///- macOS WKWebView 12.0+ ([Official API - WKMediaCaptureType.camera](https://developer.apple.com/documentation/webkit/wkmediacapturetype/camera))
   ///- Windows WebView2 ([Official API - COREWEBVIEW2_PERMISSION_KIND_CAMERA](https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/webview2-idl?view=webview2-1.0.2792.45#corewebview2_permission_kind))
+  ///- Linux WPE WebKit
   static final CAMERA = PermissionResourceType._internalMultiPlatform(
     'CAMERA',
     () {
@@ -57,6 +58,8 @@ class PermissionResourceType {
           return 0;
         case TargetPlatform.windows:
           return 2;
+        case TargetPlatform.linux:
+          return 0;
         default:
           break;
       }
@@ -69,6 +72,7 @@ class PermissionResourceType {
   ///**Officially Supported Platforms/Implementations**:
   ///- iOS WKWebView 15.0+ ([Official API - WKMediaCaptureType.cameraAndMicrophone](https://developer.apple.com/documentation/webkit/wkmediacapturetype/cameraandmicrophone))
   ///- macOS WKWebView 12.0+ ([Official API - WKMediaCaptureType.cameraAndMicrophone](https://developer.apple.com/documentation/webkit/wkmediacapturetype/cameraandmicrophone))
+  ///- Linux WPE WebKit
   static final CAMERA_AND_MICROPHONE =
       PermissionResourceType._internalMultiPlatform(
         'CAMERA_AND_MICROPHONE',
@@ -77,6 +81,8 @@ class PermissionResourceType {
             case TargetPlatform.iOS:
               return 2;
             case TargetPlatform.macOS:
+              return 2;
+            case TargetPlatform.linux:
               return 2;
             default:
               break;
@@ -147,11 +153,14 @@ class PermissionResourceType {
   ///
   ///**Officially Supported Platforms/Implementations**:
   ///- Windows WebView2 ([Official API - COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION](https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/webview2-idl?view=webview2-1.0.2792.45#corewebview2_permission_kind))
+  ///- Linux WPE WebKit
   static final GEOLOCATION = PermissionResourceType._internalMultiPlatform(
     'GEOLOCATION',
     () {
       switch (defaultTargetPlatform) {
         case TargetPlatform.windows:
+          return 3;
+        case TargetPlatform.linux:
           return 3;
         default:
           break;
@@ -186,6 +195,7 @@ class PermissionResourceType {
   ///- iOS WKWebView 15.0+ ([Official API - WKMediaCaptureType.microphone](https://developer.apple.com/documentation/webkit/wkmediacapturetype/microphone))
   ///- macOS WKWebView 12.0+ ([Official API - WKMediaCaptureType.microphone](https://developer.apple.com/documentation/webkit/wkmediacapturetype/microphone))
   ///- Windows WebView2 ([Official API - COREWEBVIEW2_PERMISSION_KIND_MICROPHONE](https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/webview2-idl?view=webview2-1.0.2792.45#corewebview2_permission_kind))
+  ///- Linux WPE WebKit
   static final MICROPHONE = PermissionResourceType._internalMultiPlatform(
     'MICROPHONE',
     () {
@@ -197,6 +207,8 @@ class PermissionResourceType {
         case TargetPlatform.macOS:
           return 1;
         case TargetPlatform.windows:
+          return 1;
+        case TargetPlatform.linux:
           return 1;
         default:
           break;
@@ -250,11 +262,14 @@ class PermissionResourceType {
   ///
   ///**Officially Supported Platforms/Implementations**:
   ///- Windows WebView2 ([Official API - COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS](https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/webview2-idl?view=webview2-1.0.2792.45#corewebview2_permission_kind))
+  ///- Linux WPE WebKit
   static final NOTIFICATIONS = PermissionResourceType._internalMultiPlatform(
     'NOTIFICATIONS',
     () {
       switch (defaultTargetPlatform) {
         case TargetPlatform.windows:
+          return 4;
+        case TargetPlatform.linux:
           return 4;
         default:
           break;
@@ -291,7 +306,7 @@ class PermissionResourceType {
           case TargetPlatform.android:
             return 'android.webkit.resource.PROTECTED_MEDIA_ID';
           case TargetPlatform.linux:
-            return 'PROTECTED_MEDIA_ID';
+            return 5;
           default:
             break;
         }
@@ -302,12 +317,15 @@ class PermissionResourceType {
   ///
   ///**Officially Supported Platforms/Implementations**:
   ///- Windows WebView2 ([Official API - COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION](https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/webview2-idl?view=webview2-1.0.2792.45#corewebview2_permission_kind))
+  ///- Linux WPE WebKit
   static final UNKNOWN = PermissionResourceType._internalMultiPlatform(
     'UNKNOWN',
     () {
       switch (defaultTargetPlatform) {
         case TargetPlatform.windows:
           return 0;
+        case TargetPlatform.linux:
+          return 7;
         default:
           break;
       }

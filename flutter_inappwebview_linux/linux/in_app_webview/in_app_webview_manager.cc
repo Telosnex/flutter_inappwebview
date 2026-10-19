@@ -176,6 +176,28 @@ void InAppWebViewManager::CreateInAppWebView(FlMethodCall* method_call) {
     }
   }
 
+  // A popup from window.open: WebKit already has its view, created in
+  // InAppWebView::OnCreateWebView. Use that view instead of a new one.
+  auto windowIdOpt = get_optional_fl_map_value<int64_t>(args, "windowId");
+  if (windowIdOpt.has_value()) {
+    std::unique_ptr<InAppWebView> popup = TakeWindowWebView(windowIdOpt.value());
+    if (popup != nullptr) {
+      std::shared_ptr<InAppWebView> webview(std::move(popup));
+      auto platform_view =
+          std::make_unique<CustomPlatformView>(messenger_, texture_registrar_, webview);
+      int64_t texture_id = platform_view->texture_id();
+      if (!keepAliveId.empty()) {
+        platform_view->set_keep_alive_id(keepAliveId);
+      }
+      platform_views_[texture_id] = std::move(platform_view);
+      g_autoptr(FlValue) result = make_fl_value(texture_id);
+      fl_method_call_respond_success(method_call, result, nullptr);
+      return;
+    }
+    debugLog("InAppWebViewManager: no popup view for windowId " +
+             std::to_string(windowIdOpt.value()) + ", creating a new view");
+  }
+
   InAppWebViewCreationParams params;
   params.id = next_id_++;
   params.plugin = plugin_;  // Pass plugin instance for accessing managers
@@ -289,6 +311,16 @@ void InAppWebViewManager::RemoveWindowWebView(int64_t windowId) {
   if (it != windowWebViews_.end()) {
     windowWebViews_.erase(it);
   }
+}
+
+std::unique_ptr<InAppWebView> InAppWebViewManager::TakeWindowWebView(int64_t windowId) {
+  auto it = windowWebViews_.find(windowId);
+  if (it == windowWebViews_.end()) {
+    return nullptr;
+  }
+  std::unique_ptr<InAppWebView> view = std::move(it->second->inAppWebView);
+  windowWebViews_.erase(it);
+  return view;
 }
 
 void InAppWebViewManager::ClearAllCache(FlMethodCall* method_call, bool includeDiskFiles) {

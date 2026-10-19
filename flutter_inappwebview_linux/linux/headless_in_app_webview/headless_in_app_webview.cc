@@ -52,6 +52,20 @@ HeadlessInAppWebView::HeadlessInAppWebView(HeadlessInAppWebViewManager* manager,
   std::fprintf(stderr, "[flutter_inappwebview_linux] HeadlessInAppWebView ctor done id=%s\n", id_.c_str());
 }
 
+HeadlessInAppWebView::HeadlessInAppWebView(HeadlessInAppWebViewManager* manager,
+                                           const HeadlessInAppWebViewCreationParams& params,
+                                           std::shared_ptr<InAppWebView> existing)
+    : manager_(manager),
+      id_(params.id),
+      width_(params.initialWidth),
+      height_(params.initialHeight),
+      webview_(std::move(existing)) {
+  webview_->AttachChannel(manager_->messenger(), id_, false);
+  webview_->setSize(static_cast<int>(width_), static_cast<int>(height_));
+  channelDelegate_ = std::make_unique<HeadlessWebViewChannelDelegate>(
+      this, manager_->messenger(), id_);
+}
+
 HeadlessInAppWebView::~HeadlessInAppWebView() {
   debugLog("HeadlessInAppWebView::~HeadlessInAppWebView id=" + id_);
 

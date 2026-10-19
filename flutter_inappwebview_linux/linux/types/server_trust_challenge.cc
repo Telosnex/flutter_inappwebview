@@ -14,34 +14,10 @@ SslError::SslError(SslErrorType code, const std::optional<std::string>& message)
     : code(code), message(message) {}
 
 FlValue* SslError::toFlValue() const {
-  std::string codeStr;
-  switch (code) {
-    case SslErrorType::NOT_YET_VALID:
-      codeStr = "NOT_YET_VALID";
-      break;
-    case SslErrorType::EXPIRED:
-      codeStr = "EXPIRED";
-      break;
-    case SslErrorType::IDMISMATCH:
-      codeStr = "IDMISMATCH";
-      break;
-    case SslErrorType::UNTRUSTED:
-      codeStr = "UNTRUSTED";
-      break;
-    case SslErrorType::REVOKED:
-      codeStr = "REVOKED";
-      break;
-    case SslErrorType::INSECURE:
-      codeStr = "INSECURE";
-      break;
-    case SslErrorType::INVALID:
-    default:
-      codeStr = "INVALID";
-      break;
-  }
-
+  // Dart reads `code` with SslErrorType.fromNativeValue(int). The Linux
+  // native values there match this enum.
   return to_fl_map({
-      {"code", make_fl_value(codeStr)},
+      {"code", make_fl_value(static_cast<int64_t>(code))},
       {"message", make_fl_value(message)},
   });
 }

@@ -239,6 +239,7 @@ InAppWebView::InAppWebView(FlPluginRegistrar* registrar, FlBinaryMessenger* mess
     : plugin_(params.plugin), registrar_(registrar), messenger_(messenger), gtk_window_(params.gtkWindow), fl_view_(params.flView), manager_(params.manager), id_(id), settings_(params.initialSettings),
       initial_user_scripts_(params.initialUserScripts) {
   js_bridge_secret_ = GenerateRandomSecret();
+  js_cancellable_ = g_cancellable_new();
   
   if (params.windowId.has_value()) {
     window_id_ = params.windowId.value();
@@ -363,6 +364,18 @@ InAppWebView::~InAppWebView() {
   // user_data, so leaving them connected during destruction can call back into
   // a freed InAppWebView/WebViewChannelDelegate.
   is_disposing_.store(true);
+#ifdef HAVE_WPE_BACKEND_LEGACY
+  // WebKit can still deliver frames, fullscreen and pointer-lock requests
+  // after this point. The callbacks see a null view and only release buffers.
+  if (backend_link_ != nullptr) {
+    backend_link_->view = nullptr;
+  }
+#endif
+  // Pending JS calls hold a reference to webview_. Cancel them so the view
+  // can be freed. Their callbacks hold only the Flutter method call.
+  if (js_cancellable_ != nullptr) {
+    g_cancellable_cancel(js_cancellable_);
+  }
   CleanupMonitorChangeHandlers();
   DisconnectEventHandlers();
 
@@ -418,6 +431,21 @@ InAppWebView::~InAppWebView() {
   // IMPORTANT: Clean up content blocker handler BEFORE the webview is destroyed
   // The ContentBlockerHandler destructor calls removeAllFilters which needs a valid content manager
   content_blocker_handler_.reset();
+
+  // Answer requests that Dart has not answered yet, so the page does not
+  // wait forever, and release them. Their callbacks see lifetime_token_
+  // expired and do nothing.
+  lifetime_token_.reset();
+  for (auto& pair : pending_permission_requests_) {
+    webkit_permission_request_deny(pair.second);
+    g_object_unref(pair.second);
+  }
+  pending_permission_requests_.clear();
+  for (auto& pair : pending_auth_requests_) {
+    webkit_authentication_request_cancel(pair.second);
+    g_object_unref(pair.second);
+  }
+  pending_auth_requests_.clear();
 
   for (auto& pair : pending_policy_decisions_) {
     webkit_policy_decision_ignore(pair.second);
@@ -508,6 +536,8 @@ InAppWebView::~InAppWebView() {
     webview_ = nullptr;
   }
 #endif
+
+  g_clear_object(&js_cancellable_);
 }
 
 void InAppWebView::InitWpeBackend() {
@@ -610,13 +640,17 @@ void InAppWebView::InitWpeBackend() {
       nullptr, nullptr  // reserved
   };
 
-  exportable_ =
-      wpe_view_backend_exportable_fdo_egl_create(&exportable_client, this, width_, height_);
+  backend_link_ = new WpeBackendLink{this, nullptr};
+  exportable_ = wpe_view_backend_exportable_fdo_egl_create(&exportable_client, backend_link_,
+                                                           width_, height_);
 
   if (exportable_ == nullptr) {
     errorLog("InAppWebView: Failed to create WPE exportable backend");
+    delete backend_link_;
+    backend_link_ = nullptr;
     return;
   }
+  backend_link_->exportable = exportable_;
 
   wpe_backend_ = wpe_view_backend_exportable_fdo_get_view_backend(exportable_);
 
@@ -624,10 +658,18 @@ void InAppWebView::InitWpeBackend() {
   backend_ = webkit_web_view_backend_new(
       wpe_backend_,
       [](gpointer data) {
-        auto* exportable = static_cast<struct wpe_view_backend_exportable_fdo*>(data);
-        wpe_view_backend_exportable_fdo_destroy(exportable);
+        auto* link = static_cast<WpeBackendLink*>(data);
+        wpe_view_backend_exportable_fdo_destroy(link->exportable);
+        if (link->view != nullptr) {
+          // Not expected: WebKit frees the backend only after the view is
+          // destroyed. Keep the view from using the freed objects.
+          link->view->backend_link_ = nullptr;
+          link->view->exportable_ = nullptr;
+          link->view->wpe_backend_ = nullptr;
+        }
+        delete link;
       },
-      exportable_);
+      backend_link_);
 
   wpe_view_backend_dispatch_set_device_scale_factor(wpe_backend_, scale_factor_);
 
@@ -640,19 +682,19 @@ void InAppWebView::InitWpeBackend() {
   wpe_view_backend_set_fullscreen_handler(
       wpe_backend_,
       [](void* data, bool fullscreen) -> bool {
-        auto* self = static_cast<InAppWebView*>(data);
-        return self->OnDomFullscreenRequest(fullscreen);
+        auto* self = static_cast<WpeBackendLink*>(data)->view;
+        return self != nullptr && self->OnDomFullscreenRequest(fullscreen);
       },
-      this);
+      backend_link_);
 
   // Set up pointer lock handler for games/immersive applications
   wpe_view_backend_set_pointer_lock_handler(
       wpe_backend_,
       [](void* data, bool lock) -> bool {
-        auto* self = static_cast<InAppWebView*>(data);
-        return self->OnPointerLockRequest(lock);
+        auto* self = static_cast<WpeBackendLink*>(data)->view;
+        return self != nullptr && self->OnPointerLockRequest(lock);
       },
-      this);
+      backend_link_);
 #endif
 }
 
@@ -1225,6 +1267,13 @@ void InAppWebView::UpdateMonitorRefreshRate() {
     }
   }
 #endif
+}
+
+InAppWebViewManager* InAppWebView::WindowManager() const {
+  if (manager_ != nullptr) {
+    return manager_;
+  }
+  return plugin_ != nullptr ? plugin_->inAppWebViewManager : nullptr;
 }
 
 // === WPE Backend Callbacks ===
@@ -1979,7 +2028,7 @@ void InAppWebView::evaluateJavascript(
       webview_, source.c_str(), source.length(),
       world,    // world name (for content world support)
       nullptr,  // source URI
-      nullptr,  // cancellable
+      js_cancellable_,
       [](GObject* source, GAsyncResult* result, gpointer user_data) {
         auto* data = static_cast<CallbackData*>(user_data);
         GError* error = nullptr;
@@ -2072,7 +2121,7 @@ void InAppWebView::callAsyncJavaScript(
       webview_, wrappedBody.c_str(), -1,  // length: null-terminated
       gvariant_args, world,
       nullptr,  // source_uri
-      nullptr,  // cancellable
+      js_cancellable_,
       [](GObject* source, GAsyncResult* result, gpointer user_data) {
         auto* data = static_cast<CallbackData*>(user_data);
         GError* error = nullptr;
@@ -3015,10 +3064,10 @@ void InAppWebView::setPointerLockHandler(std::function<bool(bool)> handler) {
     wpe_view_backend_set_pointer_lock_handler(
         wpe_backend_,
         [](void* data, bool lock) -> bool {
-          auto* self = static_cast<InAppWebView*>(data);
-          return self->OnPointerLockRequest(lock);
+          auto* self = static_cast<WpeBackendLink*>(data)->view;
+          return self != nullptr && self->OnPointerLockRequest(lock);
         },
-        this);
+        backend_link_);
   }
 #endif
   // Note: WPEPlatform uses wpe_view_lock_pointer/unlock_pointer APIs
@@ -4138,28 +4187,29 @@ gboolean InAppWebView::OnLoadFailedWithTlsErrors(WebKitWebView* web_view, gchar*
     return FALSE;
   }
 
+  // failing_uri is valid only during this signal. Copy it for the callback.
+  std::string failingUri = failing_uri != nullptr ? failing_uri : "";
+
   // Create the challenge from TLS error info
-  auto challenge = ServerTrustChallenge::fromTlsError(
-      std::string(failing_uri != nullptr ? failing_uri : ""),
-      certificate, errors);
+  auto challenge = ServerTrustChallenge::fromTlsError(failingUri, certificate, errors);
 
   // Keep a reference to the certificate and web view for later use
   g_object_ref(certificate);
   g_object_ref(web_view);
 
   auto callback = std::make_unique<WebViewChannelDelegate::ServerTrustAuthRequestCallback>();
-  callback->nonNullSuccess = [web_view, failing_uri, certificate](
+  callback->nonNullSuccess = [web_view, failingUri, certificate](
       const ServerTrustAuthResponse& response) -> bool {
     if (response.action == ServerTrustAuthResponseAction::PROCEED) {
       // Allow the certificate for this host
-      // Extract host from failing_uri
-      std::string host = get_host_from_url(std::string(failing_uri != nullptr ? failing_uri : ""));
+      std::string host = get_host_from_url(failingUri);
       if (!host.empty()) {
         // Get the network session from the web view
         WebKitNetworkSession* network_session = webkit_web_view_get_network_session(web_view);
         webkit_network_session_allow_tls_certificate_for_host(network_session, certificate, host.c_str());
-        // Reload the page to retry with the allowed certificate
-        webkit_web_view_reload(web_view);
+        // Load the URL that failed. reload() would load the view's current
+        // URI, which is not the failed one after a failed navigation.
+        webkit_web_view_load_uri(web_view, failingUri.c_str());
       }
     }
     g_object_unref(certificate);
@@ -4236,16 +4286,6 @@ WebKitWebView* InAppWebView::OnCreateWebView(WebKitWebView* web_view,
     return nullptr;
   }
 
-  // Get window ID from manager
-  int64_t windowId = 0;
-  if (self->manager_ != nullptr) {
-    windowId = self->manager_->GetNextWindowId();
-  } else {
-    // Fallback to static counter if no manager
-    static int64_t window_autoincrement_id = 0;
-    windowId = ++window_autoincrement_id;
-  }
-
   // Get the URL from the navigation action
   WebKitURIRequest* request = webkit_navigation_action_get_request(navigation_action);
   std::optional<std::string> url_to_load;
@@ -4256,6 +4296,19 @@ WebKitWebView* InAppWebView::OnCreateWebView(WebKitWebView* web_view,
     }
   }
 
+  // The popup view must be stored until Dart creates a view for it. Without a
+  // manager it would be freed at the end of this function while WebKit still
+  // uses it. Load the URL in this view instead.
+  InAppWebViewManager* windowManager = self->WindowManager();
+  if (windowManager == nullptr) {
+    errorLog("InAppWebView::OnCreateWebView: no InAppWebViewManager, loading in this view");
+    if (url_to_load.has_value() && self->webview_ != nullptr) {
+      webkit_web_view_load_uri(self->webview_, url_to_load.value().c_str());
+    }
+    return nullptr;
+  }
+  int64_t windowId = windowManager->GetNextWindowId();
+
   // Create a new InAppWebView that shares the web process with the parent
   // This is the key difference from the old implementation - we actually create
   // a real WebView that WebKit can use for the popup window
@@ -4263,14 +4316,15 @@ WebKitWebView* InAppWebView::OnCreateWebView(WebKitWebView* web_view,
   windowParams.id = windowId;
   windowParams.gtkWindow = self->gtk_window_;
   windowParams.flView = self->fl_view_;  // Pass FlView for focus restoration
-  windowParams.manager = self->manager_;
+  windowParams.manager = windowManager;
+  windowParams.plugin = self->plugin_;
   windowParams.initialSettings = self->settings_;  // Share parent settings
   windowParams.windowId = windowId;
   windowParams.relatedWebView = self->webview_;  // Share web process with parent
   
   // Create the new InAppWebView for the popup window
   auto windowWebView = std::make_unique<InAppWebView>(
-      self->registrar_, nullptr, windowId, windowParams);
+      self->registrar_, self->messenger_, windowId, windowParams);
   
   // Get the WebKitWebView* to return to WebKit BEFORE moving the unique_ptr
   WebKitWebView* newWebKitWebView = windowWebView->webview();
@@ -4285,10 +4339,8 @@ WebKitWebView* InAppWebView::OnCreateWebView(WebKitWebView* web_view,
   }
 
   // Store the InAppWebView in the manager for later attachment by Dart
-  if (self->manager_ != nullptr) {
-    auto transport = std::make_unique<WebViewTransport>(std::move(windowWebView), url_to_load);
-    self->manager_->AddWindowWebView(windowId, std::move(transport));
-  }
+  auto transport = std::make_unique<WebViewTransport>(std::move(windowWebView), url_to_load);
+  windowManager->AddWindowWebView(windowId, std::move(transport));
 
   auto createWindowAction =
       std::make_unique<CreateWindowAction>(navigation_action, windowId, nullptr);
@@ -4298,7 +4350,7 @@ WebKitWebView* InAppWebView::OnCreateWebView(WebKitWebView* web_view,
   callback->nonNullSuccess = [](bool handledByClient) { return !handledByClient; };
 
   // Capture for cleanup on default behaviour
-  auto* manager = self->manager_;
+  auto* manager = windowManager;
   auto* parentWebview = self->webview_;
   std::string captured_url = url_to_load.value_or("");
   int64_t capturedWindowId = windowId;
@@ -4528,7 +4580,11 @@ gboolean InAppWebView::OnPermissionRequest(WebKitWebView* web_view,
   auto* pendingRequests = &self->pending_permission_requests_;
   int64_t capturedId = requestId;
 
-  callback->nonNullSuccess = [pendingRequests, capturedId](PermissionResponse response) {
+  callback->nonNullSuccess = [alive = std::weak_ptr<int>(self->lifetime_token_), pendingRequests, capturedId](PermissionResponse response) {
+    if (alive.expired()) {
+      // The view is gone. Its destructor answered and released the request.
+      return false;
+    }
     auto it = pendingRequests->find(capturedId);
     if (it != pendingRequests->end()) {
       if (response.action == PermissionResponseAction::GRANT) {
@@ -4542,7 +4598,11 @@ gboolean InAppWebView::OnPermissionRequest(WebKitWebView* web_view,
     return false;
   };
 
-  callback->defaultBehaviour = [pendingRequests, capturedId](std::optional<PermissionResponse>) {
+  callback->defaultBehaviour = [alive = std::weak_ptr<int>(self->lifetime_token_), pendingRequests, capturedId](std::optional<PermissionResponse>) {
+    if (alive.expired()) {
+      // The view is gone. Its destructor answered and released the request.
+      return;
+    }
     auto it = pendingRequests->find(capturedId);
     if (it != pendingRequests->end()) {
       webkit_permission_request_deny(it->second);
@@ -4597,7 +4657,11 @@ gboolean InAppWebView::OnAuthenticate(WebKitWebView* web_view, WebKitAuthenticat
     auto* pendingRequests = &self->pending_auth_requests_;
     int64_t capturedId = requestId;
     
-    callback->nonNullSuccess = [pendingRequests, capturedId](ClientCertResponse response) {
+    callback->nonNullSuccess = [alive = std::weak_ptr<int>(self->lifetime_token_), pendingRequests, capturedId](ClientCertResponse response) {
+      if (alive.expired()) {
+        // The view is gone. Its destructor answered and released the request.
+        return false;
+      }
       auto it = pendingRequests->find(capturedId);
       if (it != pendingRequests->end()) {
         switch (response.action) {
@@ -4692,7 +4756,11 @@ gboolean InAppWebView::OnAuthenticate(WebKitWebView* web_view, WebKitAuthenticat
       return false;
     };
     
-    callback->defaultBehaviour = [pendingRequests, capturedId](std::optional<ClientCertResponse>) {
+    callback->defaultBehaviour = [alive = std::weak_ptr<int>(self->lifetime_token_), pendingRequests, capturedId](std::optional<ClientCertResponse>) {
+      if (alive.expired()) {
+        // The view is gone. Its destructor answered and released the request.
+        return;
+      }
       auto it = pendingRequests->find(capturedId);
       if (it != pendingRequests->end()) {
         webkit_authentication_request_cancel(it->second);
@@ -4732,7 +4800,11 @@ gboolean InAppWebView::OnAuthenticate(WebKitWebView* web_view, WebKitAuthenticat
   ProtectionSpace capturedPs = credProtectionSpace;
   PluginInstance* capturedPlugin = self->plugin_;
 
-  callback->nonNullSuccess = [pendingRequests, capturedId, capturedPs, capturedPlugin](HttpAuthResponse response) {
+  callback->nonNullSuccess = [alive = std::weak_ptr<int>(self->lifetime_token_), pendingRequests, capturedId, capturedPs, capturedPlugin](HttpAuthResponse response) {
+    if (alive.expired()) {
+      // The view is gone. Its destructor answered and released the request.
+      return false;
+    }
     auto it = pendingRequests->find(capturedId);
     if (it != pendingRequests->end()) {
       switch (response.action) {
@@ -4808,7 +4880,11 @@ gboolean InAppWebView::OnAuthenticate(WebKitWebView* web_view, WebKitAuthenticat
     return false;
   };
 
-  callback->defaultBehaviour = [pendingRequests, capturedId](std::optional<HttpAuthResponse>) {
+  callback->defaultBehaviour = [alive = std::weak_ptr<int>(self->lifetime_token_), pendingRequests, capturedId](std::optional<HttpAuthResponse>) {
+    if (alive.expired()) {
+      // The view is gone. Its destructor answered and released the request.
+      return;
+    }
     auto it = pendingRequests->find(capturedId);
     if (it != pendingRequests->end()) {
       webkit_authentication_request_cancel(it->second);
@@ -7456,8 +7532,8 @@ bool InAppWebView::handleScriptMessageWithReply(const std::string& body, WebKitS
   InAppWebView* targetWebView = this;
   
   // Multi-window support: lookup by windowId if available
-  if (windowId.has_value() && manager_ != nullptr) {
-    WebViewTransport* transport = manager_->GetWindowWebView(windowId.value());
+  if (windowId.has_value() && WindowManager() != nullptr) {
+    WebViewTransport* transport = WindowManager()->GetWindowWebView(windowId.value());
     if (transport != nullptr && transport->inAppWebView != nullptr) {
       targetWebView = transport->inAppWebView.get();
     }
@@ -8136,13 +8212,25 @@ void InAppWebView::OnCustomSchemeRequest(WebKitURISchemeRequest* request, gpoint
 extern "C" {
 static void wpe_export_fdo_egl_image_callback(void* data,
                                               struct wpe_fdo_egl_exported_image* image) {
-  auto* self = static_cast<flutter_inappwebview_plugin::InAppWebView*>(data);
-  self->OnExportDmaBuf(image);
+  auto* link = static_cast<flutter_inappwebview_plugin::WpeBackendLink*>(data);
+  if (link->view == nullptr) {
+    // The view is gone. Give the frame back so WebKit is not blocked.
+    wpe_view_backend_exportable_fdo_egl_dispatch_release_exported_image(link->exportable, image);
+    wpe_view_backend_exportable_fdo_dispatch_frame_complete(link->exportable);
+    return;
+  }
+  link->view->OnExportDmaBuf(image);
 }
 
 static void wpe_export_shm_buffer_callback(void* data, struct wpe_fdo_shm_exported_buffer* buffer) {
-  auto* self = static_cast<flutter_inappwebview_plugin::InAppWebView*>(data);
-  self->OnExportShmBuffer(buffer);
+  auto* link = static_cast<flutter_inappwebview_plugin::WpeBackendLink*>(data);
+  if (link->view == nullptr) {
+    // The view is gone. Give the buffer back so WebKit is not blocked.
+    wpe_view_backend_exportable_fdo_dispatch_release_shm_exported_buffer(link->exportable, buffer);
+    wpe_view_backend_exportable_fdo_dispatch_frame_complete(link->exportable);
+    return;
+  }
+  link->view->OnExportShmBuffer(buffer);
 }
 }
 #endif

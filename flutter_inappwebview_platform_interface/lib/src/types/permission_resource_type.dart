@@ -41,6 +41,7 @@ class PermissionResourceType_ {
             'https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/webview2-idl?view=webview2-1.0.2792.45#corewebview2_permission_kind',
         value: 1,
       ),
+      EnumLinuxPlatform(value: 1),
     ],
   )
   static const MICROPHONE = PermissionResourceType_._internal('MICROPHONE');
@@ -79,6 +80,7 @@ class PermissionResourceType_ {
         apiName: 'WebKitMediaKeySystemPermissionRequest',
         apiUrl:
             'https://wpewebkit.org/reference/stable/wpe-webkit-2.0/class.MediaKeySystemPermissionRequest.html',
+        value: 5,
       ),
     ],
   )
@@ -115,6 +117,7 @@ class PermissionResourceType_ {
             'https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/webview2-idl?view=webview2-1.0.2792.45#corewebview2_permission_kind',
         value: 2,
       ),
+      EnumLinuxPlatform(value: 0),
     ],
   )
   static const CAMERA = PermissionResourceType_._internal('CAMERA');
@@ -136,6 +139,7 @@ class PermissionResourceType_ {
             'https://developer.apple.com/documentation/webkit/wkmediacapturetype/cameraandmicrophone',
         value: 2,
       ),
+      EnumLinuxPlatform(value: 2),
     ],
   )
   static const CAMERA_AND_MICROPHONE = PermissionResourceType_._internal(
@@ -161,6 +165,7 @@ class PermissionResourceType_ {
             'https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/webview2-idl?view=webview2-1.0.2792.45#corewebview2_permission_kind',
         value: 0,
       ),
+      EnumLinuxPlatform(value: 7),
     ],
   )
   static const UNKNOWN = PermissionResourceType_._internal('UNKNOWN');
@@ -174,6 +179,7 @@ class PermissionResourceType_ {
             'https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/webview2-idl?view=webview2-1.0.2792.45#corewebview2_permission_kind',
         value: 3,
       ),
+      EnumLinuxPlatform(value: 3),
     ],
   )
   static const GEOLOCATION = PermissionResourceType_._internal('GEOLOCATION');
@@ -187,6 +193,7 @@ class PermissionResourceType_ {
             'https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/webview2-idl?view=webview2-1.0.2792.45#corewebview2_permission_kind',
         value: 4,
       ),
+      EnumLinuxPlatform(value: 4),
     ],
   )
   static const NOTIFICATIONS = PermissionResourceType_._internal(

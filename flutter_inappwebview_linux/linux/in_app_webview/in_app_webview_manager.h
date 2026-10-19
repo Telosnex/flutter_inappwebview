@@ -86,6 +86,9 @@ class InAppWebViewManager {
   void AddWindowWebView(int64_t windowId, std::unique_ptr<WebViewTransport> transport);
   WebViewTransport* GetWindowWebView(int64_t windowId);
   void RemoveWindowWebView(int64_t windowId);
+  // Removes the popup view stored by OnCreateWebView and returns it, so a
+  // Dart view created with this windowId can own it. Null if not found.
+  std::unique_ptr<InAppWebView> TakeWindowWebView(int64_t windowId);
 };
 
 }  // namespace flutter_inappwebview_plugin

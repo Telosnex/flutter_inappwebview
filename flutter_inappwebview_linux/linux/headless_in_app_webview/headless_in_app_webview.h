@@ -30,6 +30,10 @@ class HeadlessInAppWebView {
   HeadlessInAppWebView(HeadlessInAppWebViewManager* manager,
                        const HeadlessInAppWebViewCreationParams& params,
                        const InAppWebViewCreationParams& webviewParams);
+  // Wraps an existing view: a popup created by InAppWebView::OnCreateWebView.
+  HeadlessInAppWebView(HeadlessInAppWebViewManager* manager,
+                       const HeadlessInAppWebViewCreationParams& params,
+                       std::shared_ptr<InAppWebView> existing);
   ~HeadlessInAppWebView();
 
   const std::string& id() const { return id_; }

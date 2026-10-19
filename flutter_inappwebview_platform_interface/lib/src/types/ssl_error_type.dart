@@ -25,6 +25,7 @@ class SslErrorType_ {
             'https://developer.android.com/reference/android/net/http/SslError#SSL_NOTYETVALID',
         value: 0,
       ),
+      EnumLinuxPlatform(value: 1),
     ],
   )
   static const NOT_YET_VALID = SslErrorType_._internal('NOT_YET_VALID');
@@ -44,6 +45,7 @@ class SslErrorType_ {
             'https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/webview2-idl?view=webview2-1.0.2849.39#corewebview2_web_error_status',
         value: 2,
       ),
+      EnumLinuxPlatform(value: 2),
     ],
   )
   static const EXPIRED = SslErrorType_._internal('EXPIRED');
@@ -57,6 +59,7 @@ class SslErrorType_ {
             'https://developer.android.com/reference/android/net/http/SslError#SSL_IDMISMATCH',
         value: 2,
       ),
+      EnumLinuxPlatform(value: 3),
     ],
   )
   static const IDMISMATCH = SslErrorType_._internal('IDMISMATCH');
@@ -70,6 +73,7 @@ class SslErrorType_ {
             'https://developer.android.com/reference/android/net/http/SslError#SSL_UNTRUSTED',
         value: 3,
       ),
+      EnumLinuxPlatform(value: 4),
     ],
   )
   static const UNTRUSTED = SslErrorType_._internal('UNTRUSTED');
@@ -114,6 +118,7 @@ class SslErrorType_ {
             'https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/webview2-idl?view=webview2-1.0.2849.39#corewebview2_web_error_status',
         value: 5,
       ),
+      EnumLinuxPlatform(value: 0),
     ],
   )
   static const INVALID = SslErrorType_._internal('INVALID');
@@ -250,6 +255,7 @@ class SslErrorType_ {
             'https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/webview2-idl?view=webview2-1.0.2849.39#corewebview2_web_error_status',
         value: 3,
       ),
+      EnumLinuxPlatform(value: 6),
     ],
   )
   static const OTHER_ERROR = SslErrorType_._internal('OTHER_ERROR');
@@ -279,6 +285,7 @@ class SslErrorType_ {
             'https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/webview2-idl?view=webview2-1.0.2849.39#corewebview2_web_error_status',
         value: 4,
       ),
+      EnumLinuxPlatform(value: 5),
     ],
   )
   static const REVOKED = SslErrorType_._internal('REVOKED');

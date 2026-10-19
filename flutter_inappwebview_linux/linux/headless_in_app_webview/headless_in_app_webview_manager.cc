@@ -4,6 +4,7 @@
 #include <cstdio>
 
 #include "../flutter_inappwebview_linux_plugin_private.h"
+#include "../in_app_webview/in_app_webview_manager.h"
 #include "../plugin_instance.h"
 #include "../in_app_webview/in_app_webview_settings.h"
 #include "../types/url_request.h"
@@ -238,8 +239,24 @@ void HeadlessInAppWebViewManager::Run(FlMethodCall* method_call) {
   // Create the headless webview. It intentionally defers initial content load
   // until after channels are attached and Dart receives onWebViewCreated.
   std::fprintf(stderr, "[flutter_inappwebview_linux] HeadlessInAppWebViewManager::Run creating webview id=%s\n", id.c_str());
-  auto headlessWebView =
-      std::make_unique<HeadlessInAppWebView>(this, headlessParams, webviewParams);
+  std::unique_ptr<HeadlessInAppWebView> headlessWebView;
+  // A popup from window.open: WebKit already has its view. Use it.
+  auto windowIdOpt = get_optional_fl_map_value<int64_t>(params, "windowId");
+  InAppWebViewManager* windowManager = plugin_ ? plugin_->inAppWebViewManager : nullptr;
+  if (windowIdOpt.has_value() && windowManager != nullptr) {
+    std::unique_ptr<InAppWebView> popup = windowManager->TakeWindowWebView(windowIdOpt.value());
+    if (popup != nullptr) {
+      headlessWebView = std::make_unique<HeadlessInAppWebView>(
+          this, headlessParams, std::shared_ptr<InAppWebView>(std::move(popup)));
+      // WebKit loads the popup URL itself.
+      webviewParams.initialUrlRequest.reset();
+      webviewParams.initialFile.reset();
+      webviewParams.initialData.reset();
+    }
+  }
+  if (headlessWebView == nullptr) {
+    headlessWebView = std::make_unique<HeadlessInAppWebView>(this, headlessParams, webviewParams);
+  }
 
   // Store it
   webviews_[id] = std::move(headlessWebView);

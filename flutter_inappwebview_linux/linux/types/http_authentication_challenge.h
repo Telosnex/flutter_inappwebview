@@ -16,7 +16,6 @@ namespace flutter_inappwebview_plugin {
 class HttpAuthenticationChallenge {
  public:
   URLProtectionSpace protectionSpace;
-  std::optional<std::string> previousFailureCount;  // Number of retry attempts
   bool isRetry;
 
   HttpAuthenticationChallenge(const URLProtectionSpace& protectionSpace, bool isRetry);

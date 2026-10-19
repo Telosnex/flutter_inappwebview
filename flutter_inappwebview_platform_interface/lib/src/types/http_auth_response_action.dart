@@ -19,6 +19,7 @@ class HttpAuthResponseAction_ {
       EnumIOSPlatform(),
       EnumMacOSPlatform(),
       EnumWindowsPlatform(),
+      EnumLinuxPlatform(value: 0),
     ],
   )
   static const CANCEL = const HttpAuthResponseAction_._internal(0);
@@ -30,13 +31,19 @@ class HttpAuthResponseAction_ {
       EnumIOSPlatform(),
       EnumMacOSPlatform(),
       EnumWindowsPlatform(),
+      EnumLinuxPlatform(value: 1),
     ],
   )
   static const PROCEED = const HttpAuthResponseAction_._internal(1);
 
   ///Uses the credentials stored for the current host.
   @EnumSupportedPlatforms(
-    platforms: [EnumAndroidPlatform(), EnumIOSPlatform(), EnumMacOSPlatform()],
+    platforms: [
+      EnumAndroidPlatform(),
+      EnumIOSPlatform(),
+      EnumMacOSPlatform(),
+      EnumLinuxPlatform(value: 2),
+    ],
   )
   static const USE_SAVED_HTTP_AUTH_CREDENTIALS =
       const HttpAuthResponseAction_._internal(2);

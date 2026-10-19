@@ -125,19 +125,29 @@ window.)JS" +
   }
 
   /**
-   * Rewrites calls from plugin script sources to the internal call function.
+   * Rewrites calls in a plugin script source to the internal call function.
+   * The source is wrapped in a function that gets the internal function as a
+   * parameter, so no function that page JS can reach (and print with
+   * toString) contains its name.
    */
   static std::string INTERNALIZE_CALLS(std::string source, const std::string& functionName) {
+    static const std::string kLocal = "__fiwCall";
+    bool found = false;
     for (const std::string& from : {"window." + get_JAVASCRIPT_BRIDGE_NAME() + ".callHandler(",
                                     get_JAVASCRIPT_BRIDGE_NAME() + ".callHandler(",
                                     std::string("bridge.callHandler(")}) {
       size_t pos = 0;
       while ((pos = source.find(from, pos)) != std::string::npos) {
-        source.replace(pos, from.size(), functionName + "(");
-        pos += functionName.size() + 1;
+        source.replace(pos, from.size(), kLocal + "(");
+        pos += kLocal.size() + 1;
+        found = true;
       }
     }
-    return source;
+    if (!found) {
+      return source;
+    }
+    return "(function(" + kLocal + ") {\n" + source + "\n})(typeof " + functionName +
+           " === 'function' ? " + functionName + " : function() { return Promise.resolve(null); });\n";
   }
 
   /**

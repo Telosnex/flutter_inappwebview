@@ -294,24 +294,26 @@ void main() {
   // W4. <input type=week>: ISO week numbering year. 2024-12-30 is a Monday
   // in ISO week 1 of 2025.
   testWidgets('W4 week input uses the ISO week-numbering year', (tester) async {
-    await tester.pumpWidget(const MaterialApp(home: SizedBox()));
     if (await skipWithoutHooks()) return;
-    final t = await TestView.start(tester);
-    try {
-      await t.js(
-        '''window.__week = 'pending';
-window.flutter_inappwebview.callHandler('_onDateInputClicked',
-  {inputType: 'week', currentValue: '2024-W50', minValue: '', maxValue: '', step: '',
-   elemRect: {x:0,y:0,width:10,height:10}}).then(r => window.__week = String(r)); true;''',
-      );
-      await settle(tester, const Duration(seconds: 1));
-      expect(await Hooks.setCalendarDate(2024, 12, 30), isTrue);
-      expect(await Hooks.respond('', ok: true), isTrue);
-      await settle(tester, const Duration(seconds: 1));
-      expect(await t.js('window.__week'), '2025-W01');
-    } finally {
-      await t.dispose();
-    }
+    // A real tap opens the dialog: page JS cannot (S5). The date script
+    // opens it for a tap on the right 30 px of the input.
+    final c = await pumpVisible(
+      tester,
+      html:
+          '<!doctype html><body style="margin:0"><input type="week" id="w" '
+          'value="2024-W50" style="width:100vw;height:100vh;box-sizing:border-box">',
+    );
+    await tester.tapAt(
+      tester.getCenter(find.byType(SizedBox).last) + const Offset(290, 0),
+    );
+    await settle(tester, const Duration(seconds: 1));
+    expect(await Hooks.setCalendarDate(2024, 12, 30), isTrue);
+    expect(await Hooks.respond('', ok: true), isTrue);
+    await settle(tester, const Duration(seconds: 1));
+    expect(
+      await c.evaluateJavascript(source: "document.getElementById('w').value"),
+      '2025-W01',
+    );
   });
 
   // W5a. loadUrl with a POST URLRequest: method and body are dropped.

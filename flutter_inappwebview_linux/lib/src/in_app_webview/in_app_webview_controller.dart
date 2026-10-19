@@ -751,7 +751,8 @@ class LinuxInAppWebViewController extends PlatformInAppWebViewController
         if (contextMenu != null) {
           Map<String, dynamic> arguments = call.arguments
               .cast<String, dynamic>();
-          String id = arguments["id"] ?? "";
+          // int for custom items with an int id, String otherwise.
+          dynamic id = arguments["id"] ?? "";
           String title = arguments["title"] ?? "";
 
           ContextMenuItem menuItemClicked = ContextMenuItem(

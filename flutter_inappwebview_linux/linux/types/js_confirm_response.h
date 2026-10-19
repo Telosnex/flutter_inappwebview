@@ -8,7 +8,8 @@ namespace flutter_inappwebview_plugin {
 /**
  * Response action for JS confirm dialogs.
  */
-enum class JsConfirmResponseAction { CANCEL = 0, CONFIRM = 1 };
+// Values match Dart JsConfirmResponseAction (W3b).
+enum class JsConfirmResponseAction { CONFIRM = 0, CANCEL = 1 };
 
 /**
  * Response to a JavaScript confirm() dialog.

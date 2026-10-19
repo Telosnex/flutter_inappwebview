@@ -844,8 +844,10 @@ void WebViewChannelDelegate::HandleMethodCall(FlMethodCall* method_call) {
       std::vector<std::string> allowedOriginRules = 
           get_fl_map_value<std::vector<std::string>>(listener_value, "allowedOriginRules", std::vector<std::string>());
       
+      // The Dart listener listens on a channel named with its own id.
+      std::string listenerId = get_fl_map_value<std::string>(listener_value, "id", "");
       if (!jsObjectName.empty()) {
-        webView->addWebMessageListener(jsObjectName, allowedOriginRules);
+        webView->addWebMessageListener(jsObjectName, allowedOriginRules, listenerId);
       }
     }
     g_autoptr(FlValue) result = fl_value_new_bool(true);
@@ -1916,6 +1918,18 @@ void WebViewChannelDelegate::onHideContextMenu() const {
 
   g_autoptr(FlValue) args = to_fl_map({});
   invokeMethod("onHideContextMenu", args);
+}
+
+void WebViewChannelDelegate::onContextMenuActionItemClicked(FlValue* id,
+                                                            const std::string& title) const {
+  if (!channel_) {
+    fl_value_unref(id);
+    return;
+  }
+  g_autoptr(FlValue) args = fl_value_new_map();
+  fl_value_set_string_take(args, "id", id);
+  fl_value_set_string_take(args, "title", fl_value_new_string(title.c_str()));
+  invokeMethod("onContextMenuActionItemClicked", args);
 }
 
 void WebViewChannelDelegate::onContextMenuActionItemClicked(const std::string& id,

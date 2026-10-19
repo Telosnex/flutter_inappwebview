@@ -44,6 +44,7 @@ class UserContentController {
 
   // Plugin script management (for internal scripts like JS bridge)
   void addPluginScript(std::unique_ptr<PluginScript> pluginScript);
+  void removeAllPluginScripts();
 
   // Script message handler (standard - no reply capability)
   void setScriptMessageHandler(ScriptMessageHandler handler);

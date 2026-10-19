@@ -18,6 +18,7 @@
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <random>
+#include <regex>
 #include <set>
 #include <unordered_set>
 
@@ -795,11 +796,13 @@ void InAppWebView::InitWebView(const InAppWebViewCreationParams& params) {
   
   g_object_unref(settings);
   
+  if (networkSession != nullptr) {
+    // The view holds its own reference (W10).
+    g_object_unref(networkSession);
+    networkSession = nullptr;
+  }
   if (webview_ == nullptr) {
     errorLog("InAppWebView: Failed to create WebKitWebView with WPEPlatform");
-    if (networkSession != nullptr) {
-      g_object_unref(networkSession);
-    }
     return;
   }
   
@@ -949,13 +952,15 @@ void InAppWebView::InitWebView(const InAppWebViewCreationParams& params) {
       webview_ = webkit_web_view_new(backend_);
     }
 
+    if (networkSession != nullptr) {
+      // The view holds its own reference (W10).
+      g_object_unref(networkSession);
+      networkSession = nullptr;
+    }
     if (webview_ == nullptr) {
       errorLog("InAppWebView: Failed to create WebKitWebView");
       if (settings != nullptr) {
         g_object_unref(settings);
-      }
-      if (networkSession != nullptr) {
-        g_object_unref(networkSession);
       }
       return;
     }
@@ -1106,6 +1111,17 @@ void InAppWebView::PrepareAndAddUserScripts() {
   if (user_content_controller_ == nullptr) {
     return;
   }
+  AddPluginScripts();
+  // These are scripts passed via initialUserScripts parameter from Dart
+  for (const auto& userScript : initial_user_scripts_) {
+    user_content_controller_->addUserScript(userScript);
+  }
+}
+
+void InAppWebView::AddPluginScripts() {
+  if (user_content_controller_ == nullptr) {
+    return;
+  }
 
   bool javaScriptBridgeEnabled = java_script_bridge_enabled_;
   if (settings_) {
@@ -1218,11 +1234,6 @@ void InAppWebView::PrepareAndAddUserScripts() {
   // - FindTextHighlightJS
   // - etc.
 
-  // === Add Initial User Scripts ===
-  // These are scripts passed via initialUserScripts parameter from Dart
-  for (const auto& userScript : initial_user_scripts_) {
-    user_content_controller_->addUserScript(userScript);
-  }
 }
 
 // === Monitor Change Handlers ===
@@ -1681,7 +1692,14 @@ void InAppWebView::loadUrl(const std::shared_ptr<URLRequest>& urlRequest) {
 
   std::string method = urlRequest->method.value_or("GET");
 
-  if (method == "GET" && !urlRequest->body.has_value() && !urlRequest->headers.has_value()) {
+  // A method other than GET, or a body, needs XHR (W5a).
+  if (method != "GET" || urlRequest->body.has_value()) {
+    XhrLoad(urlRequest->url.value(), method, urlRequest->body.value_or(std::vector<uint8_t>{}),
+            urlRequest->headers.value_or(std::map<std::string, std::string>{}));
+    return;
+  }
+
+  if (!urlRequest->headers.has_value()) {
     webkit_web_view_load_uri(webview_, urlRequest->url.value().c_str());
     return;
   }
@@ -1744,40 +1762,45 @@ void InAppWebView::loadFile(const std::string& asset_file_path) {
     return;
   }
 
-  std::string file_url = "file://" + flutter_asset_path.string();
-  webkit_web_view_load_uri(webview_, file_url.c_str());
+  // Percent-encode the path (W5c).
+  gchar* file_url = g_filename_to_uri(flutter_asset_path.c_str(), nullptr, nullptr);
+  if (file_url == nullptr) {
+    debugLog("Asset path cannot be a URI: " + flutter_asset_path.string());
+    return;
+  }
+  webkit_web_view_load_uri(webview_, file_url);
+  g_free(file_url);
 }
 
 void InAppWebView::postUrl(const std::string& url, const std::vector<uint8_t>& postData) {
+  XhrLoad(url, "POST", postData,
+          std::map<std::string, std::string>{{"Content-Type", "application/x-www-form-urlencoded"}});
+}
+
+// WPE WebKit's webkit_web_view_load_request() doesn't send a body. Requests
+// with a method or a body go through XMLHttpRequest, and the response
+// replaces the document. The body is sent as bytes (W5b).
+void InAppWebView::XhrLoad(const std::string& url, const std::string& method,
+                           const std::vector<uint8_t>& postData,
+                           const std::map<std::string, std::string>& headers) {
   if (webview_ == nullptr)
     return;
 
-  g_message("InAppWebView: postUrl() called while loading, stopping current load first");
   webkit_web_view_stop_loading(webview_);
   // Give WebKit/WPE FDO a moment to clean up pending operations
   while (g_main_context_iteration(NULL, FALSE)) { }
 
-  // WPE WebKit's webkit_web_view_load_request() doesn't support POST body directly.
-  // We use JavaScript XMLHttpRequest to perform the POST and load the result.
-  // This approach is similar to the Web platform implementation.
-
-  // Convert post data to base64 for safe embedding in JavaScript
   gchar* base64_data = g_base64_encode(postData.data(), postData.size());
-
-  // Escape URL for JavaScript string
-  std::string escaped_url = url;
-  replace_all(escaped_url, "\\", "\\\\");
-  replace_all(escaped_url, "'", "\\'");
-  replace_all(escaped_url, "\n", "\\n");
-  replace_all(escaped_url, "\r", "\\r");
-
-  // Create JavaScript that performs the POST request and loads the result
+  std::string setHeaders;
+  for (const auto& header : headers) {
+    setHeaders += "  try { xhr.setRequestHeader(" + JsStringLiteral(header.first) + ", " +
+                  JsStringLiteral(header.second) + "); } catch (_) {}\n";
+  }
   std::string js = R"(
 (function() {
   var xhr = new XMLHttpRequest();
-  xhr.open('POST', ')" + escaped_url + R"(', true);
-  xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-  xhr.onload = function() {
+  xhr.open()" + JsStringLiteral(method) + ", " + JsStringLiteral(url) + R"(, true);
+)" + setHeaders + R"(  xhr.onload = function() {
     if (xhr.status >= 200 && xhr.status < 300) {
       document.open();
       document.write(xhr.responseText);
@@ -1785,10 +1808,12 @@ void InAppWebView::postUrl(const std::string& url, const std::vector<uint8_t>& p
     }
   };
   xhr.onerror = function() {
-    console.error('postUrl XHR failed for: )" + escaped_url + R"(');
+    console.error('XHR load failed for: ' + )" + JsStringLiteral(url) + R"();
   };
-  var postData = atob(')" + std::string(base64_data) + R"(');
-  xhr.send(postData);
+  var bin = atob(')" + std::string(base64_data) + R"(');
+  var bytes = new Uint8Array(bin.length);
+  for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  xhr.send(bytes.length > 0 ? bytes : null);
 })();
 )";
 
@@ -1892,7 +1917,8 @@ FlValue* InAppWebView::getCopyBackForwardList() const {
     return fl_value_new_null();
   }
 
-  GList* backList = webkit_back_forward_list_get_back_list(bfList);
+  // WebKit gives the back list nearest-first. Dart wants oldest-first (W11).
+  GList* backList = g_list_reverse(webkit_back_forward_list_get_back_list(bfList));
   WebKitBackForwardListItem* currentItem = webkit_back_forward_list_get_current_item(bfList);
   GList* forwardList = webkit_back_forward_list_get_forward_list(bfList);
 
@@ -2145,13 +2171,15 @@ void InAppWebView::callAsyncJavaScript(
   std::string wrappedBody;
   
   if (!argumentKeys.empty()) {
-    // Build destructuring: const {key1, key2, ...} = JSON.parse(__args__);
-    wrappedBody = "const {";
-    for (size_t i = 0; i < argumentKeys.size(); i++) {
-      if (i > 0) wrappedBody += ", ";
-      wrappedBody += argumentKeys[i];
+    // One local per key that is a JS identifier. Other keys cannot be
+    // variables; they stay in the parsed object (W22).
+    wrappedBody = "const __fiwArgs__ = JSON.parse(__args__);\n";
+    static const std::regex kIdentifier("^[A-Za-z_$][A-Za-z0-9_$]*$");
+    for (const auto& key : argumentKeys) {
+      if (std::regex_match(key, kIdentifier)) {
+        wrappedBody += "const " + key + " = __fiwArgs__[" + JsStringLiteral(key) + "];\n";
+      }
     }
-    wrappedBody += "} = JSON.parse(__args__);\n";
   }
   wrappedBody += functionBody;
 
@@ -2293,15 +2321,18 @@ void InAppWebView::removeAllUserScripts() {
 // === Web Message Listener ===
 
 void InAppWebView::addWebMessageListener(const std::string& jsObjectName,
-                                          const std::vector<std::string>& allowedOriginRules) {
+                                          const std::vector<std::string>& allowedOriginRules,
+                                          const std::string& dartListenerId) {
   if (webview_ == nullptr || jsObjectName.empty() || messenger_ == nullptr) {
     return;
   }
 
   // Generate a unique ID for this listener
   static int64_t listener_counter = 0;
-  std::string listenerId = std::to_string(g_get_monotonic_time()) + "_" +
-                           std::to_string(++listener_counter);
+  std::string listenerId = !dartListenerId.empty()
+                               ? dartListenerId
+                               : std::to_string(g_get_monotonic_time()) + "_" +
+                                     std::to_string(++listener_counter);
 
   // Create the native WebMessageListener with its dedicated channel
   // This follows the federated plugin pattern
@@ -2329,7 +2360,13 @@ void InAppWebView::addWebMessageListener(const std::string& jsObjectName,
         scheme = rule.substr(0, schemeEnd);
         std::string rest = rule.substr(schemeEnd + 3);
 
-        size_t portStart = rest.find(':');
+        // An IPv6 host is in brackets and has colons (W23).
+        size_t searchFrom = 0;
+        if (!rest.empty() && rest[0] == '[') {
+          size_t close = rest.find(']');
+          searchFrom = close == std::string::npos ? rest.size() : close;
+        }
+        size_t portStart = rest.find(':', searchFrom);
         if (portStart != std::string::npos) {
           host = rest.substr(0, portStart);
           try {
@@ -2871,8 +2908,16 @@ void InAppWebView::setSettings(const std::shared_ptr<InAppWebViewSettings> newSe
       content_blocker_handler_->setContentBlockers(newContentBlockers, nullptr);
     }
 
+    const bool bridgeChanged =
+        settings_ && settings_->javaScriptBridgeEnabled != newSettings->javaScriptBridgeEnabled;
     settings_ = newSettings;
     settings_->applyToWebView(webview_);
+    // The bridge and plugin scripts follow javaScriptBridgeEnabled from the
+    // next page load (W7).
+    if (bridgeChanged && user_content_controller_ != nullptr) {
+      user_content_controller_->removeAllPluginScripts();
+      AddPluginScripts();
+    }
 #ifdef HAVE_WPE_PLATFORM
     // Apply WPE Platform settings (dark mode, font settings, etc.)
     if (wpe_display_ != nullptr) {
@@ -3540,9 +3585,8 @@ void InAppWebView::SendKeyEvent(int type, int64_t keyCode, int scanCode, int mod
           pasteFromClipboard();
         }
         return;
-      case 0x61:  // 'a' - Select All
-        selectAll();
-        return;
+      // Ctrl+A goes to the page; WebKit selects all if the page does not
+      // prevent it (W8).
       case 0x7a:  // 'z' - Undo (Ctrl+Shift+Z = Redo on some systems)
         if (isShift) {
           redo();
@@ -4090,9 +4134,10 @@ gboolean InAppWebView::OnDecidePolicy(WebKitWebView* web_view, WebKitPolicyDecis
       }
 
       // Create URLRequest
+      const gchar* httpMethod = webkit_uri_request_get_http_method(request);
       auto urlRequest = std::make_shared<URLRequest>(
           uri != nullptr ? std::optional<std::string>(uri) : std::nullopt,
-          std::optional<std::string>("GET"),
+          std::optional<std::string>(httpMethod != nullptr ? httpMethod : "GET"),  // W6a
           std::nullopt,  // headers
           std::nullopt   // body
       );
@@ -4205,6 +4250,11 @@ gboolean InAppWebView::OnLoadFailed(WebKitWebView* web_view, WebKitLoadEvent loa
   
   if (self->channel_delegate_ == nullptr)
     return FALSE;
+
+  // stopLoading() and a new navigation cancel the load. That is not an error (W6c).
+  if (error != nullptr && g_error_matches(error, WEBKIT_NETWORK_ERROR, WEBKIT_NETWORK_ERROR_CANCELLED)) {
+    return FALSE;
+  }
 
   // Create WebResourceRequest for the failing URL
   auto request = std::make_shared<WebResourceRequest>(
@@ -4323,15 +4373,8 @@ WebKitWebView* InAppWebView::OnCreateWebView(WebKitWebView* web_view,
   }
 
   // Check if JavaScript can open windows automatically
+  // Without the setting, the popup is blocked. The opener does not navigate (W12).
   if (!self->settings_ || !self->settings_->javaScriptCanOpenWindowsAutomatically) {
-    // Default to allowing navigation in current window
-    WebKitURIRequest* request = webkit_navigation_action_get_request(navigation_action);
-    if (request != nullptr) {
-      const gchar* uri = webkit_uri_request_get_uri(request);
-      if (uri != nullptr && self->webview_ != nullptr) {
-        webkit_web_view_load_uri(self->webview_, uri);
-      }
-    }
     return nullptr;
   }
 
@@ -4462,7 +4505,19 @@ gboolean InAppWebView::OnScriptDialog(WebKitWebView* web_view, WebKitScriptDialo
       auto* pendingDialogs = &self->pending_script_dialogs_;
       int64_t capturedId = dialogId;
 
-      callback->nonNullSuccess = [](JsAlertResponse response) { return !response.handledByClient; };
+      // Dart answers after its own UI closed: close the dialog so alert()
+      // returns (W3a).
+      callback->nonNullSuccess = [alive = std::weak_ptr<int>(self->lifetime_token_), pendingDialogs,
+                                  capturedId](JsAlertResponse) {
+        if (alive.expired()) return false;
+        auto it = pendingDialogs->find(capturedId);
+        if (it != pendingDialogs->end()) {
+          webkit_script_dialog_close(it->second);
+          webkit_script_dialog_unref(it->second);
+          pendingDialogs->erase(it);
+        }
+        return false;
+      };
 
       callback->defaultBehaviour = [alive = std::weak_ptr<int>(self->lifetime_token_), pendingDialogs, capturedId](std::optional<JsAlertResponse>) {
         if (alive.expired()) return;
@@ -5026,6 +5081,27 @@ void InAppWebView::ShowNativeContextMenu() {
     // Set up callbacks
     context_menu_popup_->SetItemCallback(
         [this](const std::string& id, const std::string& title) {
+          // Custom items have their own id space, so a custom id never runs
+          // a stock action (W1). Dart gets the id with its original type (W1b).
+          static const std::string kCustomPrefix = "custom:";
+          if (id.rfind(kCustomPrefix, 0) == 0) {
+            size_t index = 0;
+            try {
+              index = std::stoul(id.substr(kCustomPrefix.size()));
+            } catch (...) {
+              return;
+            }
+            if (context_menu_config_ == nullptr || index >= context_menu_config_->menuItems.size() ||
+                !channel_delegate_) {
+              return;
+            }
+            const auto& item = context_menu_config_->menuItems[index];
+            FlValue* itemId = std::holds_alternative<int64_t>(item.id)
+                                  ? fl_value_new_int(std::get<int64_t>(item.id))
+                                  : fl_value_new_string(std::get<std::string>(item.id).c_str());
+            channel_delegate_->onContextMenuActionItemClicked(itemId, title);
+            return;
+          }
           // Try to execute the action directly using WebKit APIs
           int action_id = 0;
           try {
@@ -5069,7 +5145,7 @@ void InAppWebView::ShowNativeContextMenu() {
                 if (pending_hit_test_result_ != nullptr) {
                   const gchar* uri = webkit_hit_test_result_get_link_uri(pending_hit_test_result_);
                   if (uri != nullptr) {
-                    webkit_web_view_download_uri(webview_, uri);
+                    g_object_unref(webkit_web_view_download_uri(webview_, uri));  // W24
                   }
                 }
                 break;
@@ -5100,7 +5176,7 @@ void InAppWebView::ShowNativeContextMenu() {
                 if (pending_hit_test_result_ != nullptr) {
                   const gchar* uri = webkit_hit_test_result_get_image_uri(pending_hit_test_result_);
                   if (uri != nullptr) {
-                    webkit_web_view_download_uri(webview_, uri);
+                    g_object_unref(webkit_web_view_download_uri(webview_, uri));  // W24
                   }
                 }
                 break;
@@ -5223,7 +5299,7 @@ void InAppWebView::ShowNativeContextMenu() {
                 if (pending_hit_test_result_ != nullptr) {
                   const gchar* uri = webkit_hit_test_result_get_media_uri(pending_hit_test_result_);
                   if (uri != nullptr) {
-                    webkit_web_view_download_uri(webview_, uri);
+                    g_object_unref(webkit_web_view_download_uri(webview_, uri));  // W24
                   }
                 }
                 break;
@@ -5252,7 +5328,7 @@ void InAppWebView::ShowNativeContextMenu() {
                 if (pending_hit_test_result_ != nullptr) {
                   const gchar* uri = webkit_hit_test_result_get_media_uri(pending_hit_test_result_);
                   if (uri != nullptr) {
-                    webkit_web_view_download_uri(webview_, uri);
+                    g_object_unref(webkit_web_view_download_uri(webview_, uri));  // W24
                   }
                 }
                 break;
@@ -5456,9 +5532,10 @@ void InAppWebView::ShowNativeContextMenu() {
       context_menu_popup_->AddSeparator();
     }
 
-    for (const auto& customItem : context_menu_config_->menuItems) {
+    for (size_t i = 0; i < context_menu_config_->menuItems.size(); i++) {
+      const auto& customItem = context_menu_config_->menuItems[i];
       if (!customItem.title.empty()) {
-        context_menu_popup_->AddItem(customItem.getIdAsString(), customItem.title, true);
+        context_menu_popup_->AddItem("custom:" + std::to_string(i), customItem.title, true);
         hasItems = true;
       }
     }
@@ -5957,6 +6034,7 @@ static void OnDateDialogResponse(GtkDialog* dialog, gint response_id, gpointer u
         if (dt) {
           int isoYear = g_date_time_get_year(dt);
           int weekNum = g_date_time_get_week_of_year(dt);
+          isoYear = g_date_time_get_week_numbering_year(dt);  // ISO year (W4)
           g_date_time_unref(dt);
           char buf[16];
           snprintf(buf, sizeof(buf), "%04d-W%02d", isoYear, weekNum);
@@ -8195,6 +8273,13 @@ void InAppWebView::RegisterCustomSchemes() {
     if (registered.insert({context, scheme}).second) {
       webkit_web_context_register_uri_scheme(
           context, scheme.c_str(), InAppWebView::OnCustomSchemeRequest, nullptr, nullptr);
+      // Pages can fetch() the scheme: it is CORS-enabled, and secure so an
+      // https page does not block it as mixed content.
+      WebKitSecurityManager* security = webkit_web_context_get_security_manager(context);
+      if (security != nullptr) {
+        webkit_security_manager_register_uri_scheme_as_cors_enabled(security, scheme.c_str());
+        webkit_security_manager_register_uri_scheme_as_secure(security, scheme.c_str());
+      }
     }
   }
 }
@@ -8253,20 +8338,31 @@ void InAppWebView::OnCustomSchemeRequest(WebKitURISchemeRequest* request, gpoint
 
   // Set up the nonNullSuccess handler to process the response
   callback->nonNullSuccess = [request](const std::shared_ptr<CustomSchemeResponse>& response) -> bool {
-    if (response == nullptr || response->data.empty()) {
+    if (response == nullptr) {
       // No response provided - finish with error
       g_autoptr(GError) error =
           g_error_new(G_IO_ERROR, G_IO_ERROR_NOT_FOUND, "Resource not found");
       webkit_uri_scheme_request_finish_error(request, error);
     } else {
       // Create input stream from response data
+      // An empty body is a valid response (W13).
       GInputStream* stream =
-          g_memory_input_stream_new_from_data(g_memdup2(response->data.data(), response->data.size()),
-                                              response->data.size(), g_free);
+          response->data.empty()
+              ? g_memory_input_stream_new()
+              : g_memory_input_stream_new_from_data(
+                    g_memdup2(response->data.data(), response->data.size()),
+                    response->data.size(), g_free);
 
-      // Finish the request with the response data
-      webkit_uri_scheme_request_finish(request, stream, response->data.size(),
-                                       response->contentType.c_str());
+      // fetch() from a page needs CORS headers, or WebKit rejects the
+      // response after the handler ran (C7, W13).
+      WebKitURISchemeResponse* schemeResponse =
+          webkit_uri_scheme_response_new(stream, static_cast<gint64>(response->data.size()));
+      webkit_uri_scheme_response_set_content_type(schemeResponse, response->contentType.c_str());
+      SoupMessageHeaders* headers = soup_message_headers_new(SOUP_MESSAGE_HEADERS_RESPONSE);
+      soup_message_headers_append(headers, "Access-Control-Allow-Origin", "*");
+      webkit_uri_scheme_response_set_http_headers(schemeResponse, headers);  // takes ownership
+      webkit_uri_scheme_request_finish_with_response(request, schemeResponse);
+      g_object_unref(schemeResponse);
 
       g_object_unref(stream);
     }

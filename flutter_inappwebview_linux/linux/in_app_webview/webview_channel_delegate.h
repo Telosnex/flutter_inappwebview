@@ -294,6 +294,8 @@ class WebViewChannelDelegate : public ChannelDelegate {
   void onCreateContextMenu(const HitTestResult& hitTestResult) const;
   void onHideContextMenu() const;
   void onContextMenuActionItemClicked(const std::string& id, const std::string& title) const;
+  // Takes ownership of id (int or string).
+  void onContextMenuActionItemClicked(FlValue* id, const std::string& title) const;
 
   // Media capture state change events
   void onCameraCaptureStateChanged(int oldState, int newState) const;

@@ -11,7 +11,8 @@ namespace flutter_inappwebview_plugin {
 /**
  * Response action for JS prompt dialogs.
  */
-enum class JsPromptResponseAction { CANCEL = 0, CONFIRM = 1 };
+// Values match Dart JsPromptResponseAction (W3c).
+enum class JsPromptResponseAction { CONFIRM = 0, CANCEL = 1 };
 
 /**
  * Response to a JavaScript prompt() dialog.

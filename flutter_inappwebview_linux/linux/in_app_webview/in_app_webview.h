@@ -211,7 +211,8 @@ class InAppWebView {
 
   // Web Message Listener
   void addWebMessageListener(const std::string& jsObjectName,
-                              const std::vector<std::string>& allowedOriginRules);
+                             const std::vector<std::string>& allowedOriginRules,
+                             const std::string& dartListenerId = "");
 
   // Web Message Channel
   void createWebMessageChannel(std::function<void(const std::optional<std::string>&)> callback);
@@ -697,6 +698,10 @@ class InAppWebView {
   void RegisterEventHandlers();
   void DisconnectEventHandlers();
   void PrepareAndAddUserScripts();  // Add plugin scripts based on settings
+  void AddPluginScripts();
+  void XhrLoad(const std::string& url, const std::string& method,
+               const std::vector<uint8_t>& postData,
+               const std::map<std::string, std::string>& headers);
   void SetupMonitorChangeHandlers();
   void CleanupMonitorChangeHandlers();
   void UpdateMonitorRefreshRate();

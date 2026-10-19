@@ -14,7 +14,7 @@ JsPromptResponse::JsPromptResponse(FlValue* map)
   }
 
   handledByClient = get_fl_map_value(map, "handledByClient", handledByClient);
-  int64_t actionInt = get_fl_map_value<int64_t>(map, "action", 0);
+  int64_t actionInt = get_fl_map_value<int64_t>(map, "action", 1);  // CANCEL
   action = static_cast<JsPromptResponseAction>(actionInt);
   value = get_optional_fl_map_value<std::string>(map, "value");
 }

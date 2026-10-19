@@ -108,6 +108,23 @@ void main() {
     }
   });
 
+  // S2b. No plugin function that page JS can reach shows the internal call
+  // function's name in its source.
+  testWidgets('S2b internal call name does not leak through toString', (
+    tester,
+  ) async {
+    await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+    final t = await TestView.start(tester);
+    try {
+      final sources = await t.js('''[console.log, console.error, window.print,
+  window.flutter_inappwebview.callHandler].map(String).join('\\n')''');
+      expect(sources, isA<String>());
+      expect(sources, isNot(contains('_fiw_')));
+    } finally {
+      await t.dispose();
+    }
+  });
+
   // S5b. A click() from page JS is not a user gesture either.
   testWidgets('S5b scripted click does not open the color dialog', (
     tester,

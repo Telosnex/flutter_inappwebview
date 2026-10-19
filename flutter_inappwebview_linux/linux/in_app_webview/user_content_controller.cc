@@ -211,6 +211,11 @@ void UserContentController::registerScriptMessageHandlerWithReply(const std::str
   registered_message_handlers_with_reply_.push_back(name);
 }
 
+void UserContentController::removeAllPluginScripts() {
+  plugin_scripts_.clear();
+  rebuildScripts();
+}
+
 void UserContentController::addPluginScript(std::unique_ptr<PluginScript> pluginScript) {
   if (pluginScript == nullptr || content_manager_ == nullptr) {
     return;

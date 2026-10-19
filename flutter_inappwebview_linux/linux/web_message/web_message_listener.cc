@@ -65,6 +65,38 @@ WebMessageListener::~WebMessageListener() {
   dispose();
 }
 
+namespace {
+// Splits "scheme://host[:port][/path]". An IPv6 host keeps its brackets and
+// may contain colons (W23). port is 0 when absent.
+void SplitOrigin(const std::string& origin, std::string& scheme, std::string& host, int& port) {
+  scheme.clear();
+  host.clear();
+  port = 0;
+  size_t schemeEnd = origin.find("://");
+  if (schemeEnd == std::string::npos) return;
+  scheme = origin.substr(0, schemeEnd);
+  std::string rest = origin.substr(schemeEnd + 3);
+  size_t pathStart = rest.find('/');
+  if (pathStart != std::string::npos) rest = rest.substr(0, pathStart);
+  size_t searchFrom = 0;
+  if (!rest.empty() && rest[0] == '[') {
+    size_t close = rest.find(']');
+    searchFrom = close == std::string::npos ? rest.size() : close;
+  }
+  size_t portStart = rest.find(':', searchFrom);
+  if (portStart == std::string::npos) {
+    host = rest;
+    return;
+  }
+  host = rest.substr(0, portStart);
+  try {
+    port = std::stoi(rest.substr(portStart + 1));
+  } catch (...) {
+    port = 0;
+  }
+}
+}  // namespace
+
 bool WebMessageListener::isOriginAllowed(const std::string& scheme,
                                          const std::string& host,
                                          int port) const {
@@ -79,28 +111,12 @@ bool WebMessageListener::isOriginAllowed(const std::string& scheme,
       continue;
     }
 
-    // Parse the rule: scheme://host[:port]
-    size_t schemeEnd = rule.find("://");
-    if (schemeEnd == std::string::npos) {
-      continue;
-    }
-
-    std::string ruleScheme = rule.substr(0, schemeEnd);
-    std::string rest = rule.substr(schemeEnd + 3);
-
+    std::string ruleScheme;
     std::string ruleHost;
     int rulePort = 0;
-
-    size_t portStart = rest.find(':');
-    if (portStart != std::string::npos) {
-      ruleHost = rest.substr(0, portStart);
-      try {
-        rulePort = std::stoi(rest.substr(portStart + 1));
-      } catch (...) {
-        rulePort = 0;
-      }
-    } else {
-      ruleHost = rest;
+    SplitOrigin(rule, ruleScheme, ruleHost, rulePort);
+    if (ruleScheme.empty()) {
+      continue;
     }
 
     // Normalize ports (use default for scheme if not specified)
@@ -155,30 +171,7 @@ void WebMessageListener::onPostMessage(const std::string* messageData,
   std::string host;
   int port = 0;
 
-  if (!sourceOrigin.empty()) {
-    size_t schemeEnd = sourceOrigin.find("://");
-    if (schemeEnd != std::string::npos) {
-      scheme = sourceOrigin.substr(0, schemeEnd);
-      std::string rest = sourceOrigin.substr(schemeEnd + 3);
-
-      size_t portStart = rest.find(':');
-      size_t pathStart = rest.find('/');
-      
-      if (portStart != std::string::npos && (pathStart == std::string::npos || portStart < pathStart)) {
-        host = rest.substr(0, portStart);
-        size_t portEnd = (pathStart != std::string::npos) ? pathStart : rest.size();
-        try {
-          port = std::stoi(rest.substr(portStart + 1, portEnd - portStart - 1));
-        } catch (...) {
-          port = 0;
-        }
-      } else if (pathStart != std::string::npos) {
-        host = rest.substr(0, pathStart);
-      } else {
-        host = rest;
-      }
-    }
-  }
+  SplitOrigin(sourceOrigin, scheme, host, port);
 
   // Check if this origin is allowed (unless origin is empty/about:blank)
   if (!sourceOrigin.empty() && sourceOrigin != "null") {

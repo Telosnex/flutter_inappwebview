@@ -14,9 +14,9 @@ JsBeforeUnloadResponse::JsBeforeUnloadResponse(FlValue* map)
   }
 
   handledByClient = get_fl_map_value(map, "handledByClient", handledByClient);
-  // Action 1 = allow navigation
-  int64_t actionInt = get_fl_map_value<int64_t>(map, "action", 1);
-  shouldAllowNavigation = (actionInt == 1);
+  // Dart JsBeforeUnloadResponseAction: CONFIRM = 0 (leave), CANCEL = 1 (W3d).
+  int64_t actionInt = get_fl_map_value<int64_t>(map, "action", 0);
+  shouldAllowNavigation = (actionInt == 0);
   message = get_optional_fl_map_value<std::string>(map, "message");
 }
 

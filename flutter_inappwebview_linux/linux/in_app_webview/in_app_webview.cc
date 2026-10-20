@@ -4116,7 +4116,10 @@ gboolean InAppWebView::OnDecidePolicy(WebKitWebView* web_view, WebKitPolicyDecis
       g_object_ref(decision);
       self->pending_policy_decisions_[decision_id] = decision;
 
-      // Best-effort main frame detection: frame name is usually null/empty for main frame.
+      // Best-effort main frame detection. WebKit's navigation action has no
+      // frame, so this guesses from the target frame name. A navigation in an
+      // unnamed iframe is reported as main frame (W6b, a known WebKit limit;
+      // see REVIEW_in_app_webview.md).
       bool is_for_main_frame = true;
       const gchar* frame_name = webkit_navigation_action_get_frame_name(nav_action);
       if (frame_name != nullptr && frame_name[0] != '\0') {
@@ -4663,6 +4666,9 @@ gboolean InAppWebView::OnPermissionRequest(WebKitWebView* web_view,
     return TRUE;
   }
 
+  // The top document's origin. WebKit's permission request does not say
+  // which frame asked, so a request from a cross-site iframe names the top
+  // page (S4b, a known WebKit limit; see REVIEW_in_app_webview.md).
   std::optional<std::string> origin;
   const gchar* uri = webkit_web_view_get_uri(web_view);
   if (uri != nullptr) {

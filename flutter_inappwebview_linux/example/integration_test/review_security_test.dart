@@ -12,15 +12,19 @@ import 'package:integration_test/integration_test.dart';
 
 import 'review_common.dart';
 
-/// Loads [baseUrl] with an allow list of {'https://example.com'} and reports
-/// whether page JS reached the 'probe' handler.
-Future<bool> handlerReachableFrom(WidgetTester tester, String baseUrl) async {
+/// Loads [baseUrl] with [allowList] (default {'https://example.com'}) and
+/// reports whether page JS reached the 'probe' handler.
+Future<bool> handlerReachableFrom(
+  WidgetTester tester,
+  String baseUrl, {
+  Set<String> allowList = const {'https://example.com'},
+}) async {
   var called = false;
   final t = await TestView.start(
     tester,
     baseUrl: baseUrl,
     settings: InAppWebViewSettings(
-      javaScriptHandlersOriginAllowList: {'https://example.com'},
+      javaScriptHandlersOriginAllowList: allowList,
     ),
     onCreated: (c) => c.addJavaScriptHandler(
       handlerName: 'probe',
@@ -73,6 +77,46 @@ void main() {
     await tester.pumpWidget(const MaterialApp(home: SizedBox()));
     expect(
       await handlerReachableFrom(tester, 'https://example.com:8443/'),
+      isFalse,
+    );
+  });
+
+  // S1d. Android-style subdomain rule: subdomains at any depth, same scheme
+  // and port, not the domain itself.
+  testWidgets('S1d subdomain rule in the handler allow list', (tester) async {
+    await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+    final results = <String, bool>{};
+    for (final url in [
+      'https://a.example.com/',
+      'https://a.b.example.com/',
+      'https://example.com/',
+      'https://evilexample.com/',
+      'https://a.example.com:8443/',
+      'http://a.example.com/',
+    ]) {
+      results[url] = await handlerReachableFrom(
+        tester,
+        url,
+        allowList: {'https://*.example.com'},
+      );
+    }
+    expect(results, {
+      'https://a.example.com/': true,
+      'https://a.b.example.com/': true,
+      'https://example.com/': false,
+      'https://evilexample.com/': false,
+      'https://a.example.com:8443/': false,
+      'http://a.example.com/': false,
+    });
+  });
+
+  // S1e. The docs: an empty handler allow list blocks every origin.
+  testWidgets('S1e empty handler allow list blocks every origin', (
+    tester,
+  ) async {
+    await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+    expect(
+      await handlerReachableFrom(tester, 'https://example.com/', allowList: {}),
       isFalse,
     );
   });
@@ -202,6 +246,30 @@ void main() {
       await probeAt(tester, 'https://example.com/', settings, bridgeType),
       'undefined',
     );
+  });
+
+  testWidgets('N1e subdomain rule in the bridge allow list', (tester) async {
+    await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+    final settings = InAppWebViewSettings(
+      javaScriptBridgeOriginAllowList: {'https://*.example.com:8443'},
+    );
+    final results = <String, dynamic>{};
+    for (final url in [
+      'https://a.example.com:8443/',
+      'https://a.b.example.com:8443/',
+      'https://example.com:8443/',
+      'https://a.example.com/',
+      'https://evilexample.com:8443/',
+    ]) {
+      results[url] = await probeAt(tester, url, settings, bridgeType);
+    }
+    expect(results, {
+      'https://a.example.com:8443/': 'object',
+      'https://a.b.example.com:8443/': 'object',
+      'https://example.com:8443/': 'undefined',
+      'https://a.example.com/': 'undefined',
+      'https://evilexample.com:8443/': 'undefined',
+    });
   });
 
   testWidgets('N1d user script allowedOriginRules are enforced', (

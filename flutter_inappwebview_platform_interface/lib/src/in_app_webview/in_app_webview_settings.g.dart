@@ -1181,6 +1181,11 @@ class InAppWebViewSettings {
   ///**NOTE for iOS, macOS, Windows**: each origin pattern will be used as a
   ///Regular Expression Pattern that will be used on JavaScript side using [RegExp](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/RegExp).
   ///
+  ///**NOTE for Linux**: each rule is `'*'`, an exact origin (`scheme://host[:port]`),
+  ///or a subdomain rule (`scheme://*.example.com[:port]`), as on Android.
+  ///A subdomain rule matches subdomains at any depth, but not `example.com` itself.
+  ///Regular expressions are not supported.
+  ///
   ///The default value is `null` and will allow every origin.
   ///
   ///**Officially Supported Platforms/Implementations**:
@@ -1189,6 +1194,8 @@ class InAppWebViewSettings {
   ///- macOS WKWebView
   ///- Windows WebView2
   ///- Web \<iframe\> but requires same origin
+  ///- Linux WPE WebKit:
+  ///    - Rules are exact origins or `*.` subdomain rules, not regular expressions.
   Set<String>? javaScriptBridgeOriginAllowList;
 
   ///Sets whether JavaScript can access the clipboard.
@@ -1236,6 +1243,11 @@ class InAppWebViewSettings {
   ///
   ///An empty [Set] will block every origin.
   ///
+  ///**NOTE for Linux**: each rule is `'*'`, an exact origin (`scheme://host[:port]`),
+  ///or a subdomain rule (`scheme://*.example.com[:port]`), as on Android.
+  ///A subdomain rule matches subdomains at any depth, but not `example.com` itself.
+  ///Regular expressions are not supported.
+  ///
   ///The default value is `null` and will allow every origin.
   ///
   ///**Officially Supported Platforms/Implementations**:
@@ -1244,6 +1256,8 @@ class InAppWebViewSettings {
   ///- macOS WKWebView
   ///- Windows WebView2
   ///- Web \<iframe\> but requires same origin
+  ///- Linux WPE WebKit:
+  ///    - Rules are exact origins or `*.` subdomain rules, not regular expressions.
   Set<String>? javaScriptHandlersOriginAllowList;
 
   ///Sets the key repeat delay in milliseconds.
@@ -1512,6 +1526,11 @@ class InAppWebViewSettings {
   ///**NOTE for iOS, macOS, Windows**: each origin pattern will be used as a
   ///Regular Expression Pattern that will be used on JavaScript side using [RegExp](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/RegExp).
   ///
+  ///**NOTE for Linux**: each rule is `'*'`, an exact origin (`scheme://host[:port]`),
+  ///or a subdomain rule (`scheme://*.example.com[:port]`), as on Android.
+  ///A subdomain rule matches subdomains at any depth, but not `example.com` itself.
+  ///Regular expressions are not supported.
+  ///
   ///The default value is `null` and will allow every origin.
   ///
   ///**Officially Supported Platforms/Implementations**:
@@ -1519,6 +1538,8 @@ class InAppWebViewSettings {
   ///- iOS WKWebView
   ///- macOS WKWebView
   ///- Windows WebView2
+  ///- Linux WPE WebKit:
+  ///    - Rules are exact origins or `*.` subdomain rules, not regular expressions.
   Set<String>? pluginScriptsOriginAllowList;
 
   ///Sets the content mode that the WebView needs to use when loading and rendering a webpage. The default value is [UserPreferredContentMode.RECOMMENDED].
@@ -4391,6 +4412,8 @@ enum InAppWebViewSettingsProperty {
   ///- macOS WKWebView
   ///- Windows WebView2
   ///- Web \<iframe\> but requires same origin
+  ///- Linux WPE WebKit:
+  ///    - Rules are exact origins or `*.` subdomain rules, not regular expressions.
   ///
   ///Use the [InAppWebViewSettings.isPropertySupported] method to check if this property is supported at runtime.
   ///{@endtemplate}
@@ -4460,6 +4483,8 @@ enum InAppWebViewSettingsProperty {
   ///- macOS WKWebView
   ///- Windows WebView2
   ///- Web \<iframe\> but requires same origin
+  ///- Linux WPE WebKit:
+  ///    - Rules are exact origins or `*.` subdomain rules, not regular expressions.
   ///
   ///Use the [InAppWebViewSettings.isPropertySupported] method to check if this property is supported at runtime.
   ///{@endtemplate}
@@ -4774,6 +4799,8 @@ enum InAppWebViewSettingsProperty {
   ///- iOS WKWebView
   ///- macOS WKWebView
   ///- Windows WebView2
+  ///- Linux WPE WebKit:
+  ///    - Rules are exact origins or `*.` subdomain rules, not regular expressions.
   ///
   ///Use the [InAppWebViewSettings.isPropertySupported] method to check if this property is supported at runtime.
   ///{@endtemplate}
@@ -5943,6 +5970,7 @@ extension _InAppWebViewSettingsPropertySupported on InAppWebViewSettings {
                     TargetPlatform.iOS,
                     TargetPlatform.macOS,
                     TargetPlatform.windows,
+                    TargetPlatform.linux,
                   ].contains(platform ?? defaultTargetPlatform);
       case InAppWebViewSettingsProperty.javaScriptCanAccessClipboard:
         return ((kIsWeb && platform != null) || !kIsWeb) &&
@@ -5983,6 +6011,7 @@ extension _InAppWebViewSettingsPropertySupported on InAppWebViewSettings {
                     TargetPlatform.iOS,
                     TargetPlatform.macOS,
                     TargetPlatform.windows,
+                    TargetPlatform.linux,
                   ].contains(platform ?? defaultTargetPlatform);
       case InAppWebViewSettingsProperty.keyRepeatDelay:
         return ((kIsWeb && platform != null) || !kIsWeb) &&
@@ -6117,6 +6146,7 @@ extension _InAppWebViewSettingsPropertySupported on InAppWebViewSettings {
               TargetPlatform.iOS,
               TargetPlatform.macOS,
               TargetPlatform.windows,
+              TargetPlatform.linux,
             ].contains(platform ?? defaultTargetPlatform);
       case InAppWebViewSettingsProperty.preferredContentMode:
         return ((kIsWeb && platform != null) || !kIsWeb) &&

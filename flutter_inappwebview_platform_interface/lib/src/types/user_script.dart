@@ -44,12 +44,21 @@ class UserScript_ {
   ///
   ///**NOTE for iOS, macOS, Windows**: each origin pattern will be used as a
   ///Regular Expression Pattern that will be used on JavaScript side using [RegExp](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/RegExp).
+  ///**NOTE for Linux**: each rule is `'*'`, an exact origin (`scheme://host[:port]`),
+  ///or a subdomain rule (`scheme://*.example.com[:port]`), as on Android.
+  ///A subdomain rule matches subdomains at any depth, but not `example.com` itself.
+  ///Regular expressions are not supported.
+  ///
   @SupportedPlatforms(
     platforms: [
       AndroidPlatform(),
       IOSPlatform(),
       MacOSPlatform(),
       WindowsPlatform(),
+      LinuxPlatform(
+        note:
+            'Rules are exact origins or `*.` subdomain rules, not regular expressions.',
+      ),
     ],
   )
   late Set<String> allowedOriginRules;

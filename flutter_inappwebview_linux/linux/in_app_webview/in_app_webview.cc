@@ -7624,20 +7624,11 @@ bool InAppWebView::handleScriptMessageWithReply(const std::string& body, WebKitS
   }
 
   // === Security Check 3: Origin Allow List ===
+  // Rules as in utils/origin.h (S1). An empty list allows no origin.
   bool isOriginAllowed = true;
   if (settings_ && settings_->javaScriptHandlersOriginAllowList.has_value()) {
-    const auto& allowList = settings_->javaScriptHandlersOriginAllowList.value();
-    if (!allowList.empty()) {
-      isOriginAllowed = false;
-      for (const auto& allowedOrigin : allowList) {
-        // Exact origin match: scheme, host and port (S1).
-        if (allowedOrigin == "*" ||
-            (!sourceOrigin.empty() && sourceOrigin == OriginOfUrl(allowedOrigin))) {
-          isOriginAllowed = true;
-          break;
-        }
-      }
-    }
+    isOriginAllowed =
+        OriginAllowed(sourceOrigin, settings_->javaScriptHandlersOriginAllowList.value());
   }
 
   if (!isOriginAllowed) {

@@ -69,8 +69,8 @@ class LinuxWebStorageManager extends PlatformWebStorageManager {
         WebsiteDataType.WKWebsiteDataTypeServiceWorkerRegistrations) {
       return 'WEBKIT_WEBSITE_DATA_SERVICE_WORKER_REGISTRATIONS';
     } else if (type == WebsiteDataType.WKWebsiteDataTypeFetchCache) {
-      // WPE uses same as disk cache for fetch cache
-      return 'WEBKIT_WEBSITE_DATA_DISK_CACHE';
+      // The Cache API (WKWebsiteDataTypeFetchCache on Apple).
+      return 'WEBKIT_WEBSITE_DATA_DOM_CACHE';
     } else if (type == WebsiteDataType.WKWebsiteDataTypeWebSQLDatabases) {
       // WebSQL is deprecated, map to local storage
       return 'WEBKIT_WEBSITE_DATA_LOCAL_STORAGE';
@@ -97,6 +97,8 @@ class LinuxWebStorageManager extends PlatformWebStorageManager {
       return WebsiteDataType.WKWebsiteDataTypeIndexedDBDatabases;
     } else if (wpeType == 'WEBKIT_WEBSITE_DATA_SERVICE_WORKER_REGISTRATIONS') {
       return WebsiteDataType.WKWebsiteDataTypeServiceWorkerRegistrations;
+    } else if (wpeType == 'WEBKIT_WEBSITE_DATA_DOM_CACHE') {
+      return WebsiteDataType.WKWebsiteDataTypeFetchCache;
     }
     return null;
   }
@@ -163,6 +165,9 @@ class LinuxWebStorageManager extends PlatformWebStorageManager {
     });
   }
 
+  /// [WebsiteDataType.ALL] clears every WebKit data type
+  /// (`WEBKIT_WEBSITE_DATA_ALL`), including ones with no [WebsiteDataType]:
+  /// device ID hash salts, the HSTS cache and tracking prevention data.
   @override
   Future<void> removeDataModifiedSince({
     required Set<WebsiteDataType> dataTypes,
@@ -177,6 +182,7 @@ class LinuxWebStorageManager extends PlatformWebStorageManager {
 
     await _channel.invokeMethod('removeDataModifiedSince', {
       'dataTypes': wpeDataTypes,
+      'all': dataTypes.containsAll(WebsiteDataType.ALL),
       'timestamp': timestamp,
     });
   }

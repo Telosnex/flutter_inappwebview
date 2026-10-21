@@ -99,6 +99,8 @@ WebKitWebsiteDataTypes WebStorageManager::parseDataTypes(FlValue* dataTypesValue
       types = static_cast<WebKitWebsiteDataTypes>(types | WEBKIT_WEBSITE_DATA_INDEXEDDB_DATABASES);
     } else if (strcmp(typeStr, "WEBKIT_WEBSITE_DATA_SERVICE_WORKER_REGISTRATIONS") == 0) {
       types = static_cast<WebKitWebsiteDataTypes>(types | WEBKIT_WEBSITE_DATA_SERVICE_WORKER_REGISTRATIONS);
+    } else if (strcmp(typeStr, "WEBKIT_WEBSITE_DATA_DOM_CACHE") == 0) {
+      types = static_cast<WebKitWebsiteDataTypes>(types | WEBKIT_WEBSITE_DATA_DOM_CACHE);
     }
   }
 
@@ -131,6 +133,9 @@ FlValue* WebStorageManager::dataTypesToFlValue(WebKitWebsiteDataTypes types) {
   }
   if (types & WEBKIT_WEBSITE_DATA_SERVICE_WORKER_REGISTRATIONS) {
     fl_value_append_take(list, fl_value_new_string("WEBKIT_WEBSITE_DATA_SERVICE_WORKER_REGISTRATIONS"));
+  }
+  if (types & WEBKIT_WEBSITE_DATA_DOM_CACHE) {
+    fl_value_append_take(list, fl_value_new_string("WEBKIT_WEBSITE_DATA_DOM_CACHE"));
   }
 
   return fl_value_ref(list);
@@ -328,6 +333,13 @@ void WebStorageManager::removeDataModifiedSince(FlMethodCall* method_call) {
   FlValue* timestampValue = fl_value_lookup_string(args, "timestamp");
 
   WebKitWebsiteDataTypes types = parseDataTypes(dataTypesValue);
+  // WebsiteDataType.ALL: every WebKit type, also the ones WebsiteDataType
+  // cannot name (device ID hash salts, HSTS cache, tracking prevention).
+  FlValue* allValue = fl_value_lookup_string(args, "all");
+  if (allValue != nullptr && fl_value_get_type(allValue) == FL_VALUE_TYPE_BOOL &&
+      fl_value_get_bool(allValue)) {
+    types = WEBKIT_WEBSITE_DATA_ALL;
+  }
 
   // Get timestamp (seconds since epoch)
   gint64 timestamp = 0;
@@ -336,10 +348,18 @@ void WebStorageManager::removeDataModifiedSince(FlMethodCall* method_call) {
     timestamp = fl_value_get_int(timestampValue);
   }
 
-  // Convert to GDateTime
-  GDateTime* datetime = g_date_time_new_from_unix_utc(timestamp);
-  GTimeSpan timespan = g_date_time_to_unix(datetime);
-  g_date_time_unref(datetime);
+  // webkit_website_data_manager_clear takes how far back to clear, in
+  // microseconds (0 = all time), not a date. This passed the date's seconds
+  // since the epoch, which was right only for the epoch.
+  GTimeSpan timespan = 0;
+  if (timestamp > 0) {
+    timespan = g_get_real_time() - timestamp * G_USEC_PER_SEC;
+    if (timespan <= 0) {
+      // A date in the future: nothing was modified since.
+      fl_method_call_respond_success(method_call, fl_value_new_bool(true), nullptr);
+      return;
+    }
+  }
 
   g_object_ref(method_call);
 

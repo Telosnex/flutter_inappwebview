@@ -23,6 +23,7 @@ part 'platform_web_storage_manager.g.dart';
     IOSPlatform(available: '9.0'),
     LinuxPlatform(),
     MacOSPlatform(),
+    WindowsPlatform(),
   ],
 )
 @immutable
@@ -66,6 +67,11 @@ class PlatformWebStorageManagerCreationParams {
       apiName: 'WKWebsiteDataStore',
       apiUrl:
           'https://developer.apple.com/documentation/webkit/wkwebsitedatastore',
+    ),
+    WindowsPlatform(
+      apiName: 'ICoreWebView2Profile2',
+      apiUrl:
+          'https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2profile2',
     ),
   ],
 )
@@ -320,6 +326,13 @@ abstract class PlatformWebStorageManager extends PlatformInterface {
         apiName: 'WKWebsiteDataStore.removeData',
         apiUrl:
             'https://developer.apple.com/documentation/webkit/wkwebsitedatastore/1532938-removedata',
+      ),
+      WindowsPlatform(
+        apiName: 'ICoreWebView2Profile2.ClearBrowsingDataInTimeRange',
+        apiUrl:
+            'https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2profile2#clearbrowsingdataintimerange',
+        note:
+            'Uses the default WebViewEnvironment. WebsiteDataType.ALL clears the whole WebView2 profile, including autofill, saved passwords, history and settings. Session storage is in memory only and is not cleared.',
       ),
     ],
   )

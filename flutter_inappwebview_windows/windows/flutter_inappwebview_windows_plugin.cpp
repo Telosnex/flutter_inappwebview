@@ -3,6 +3,7 @@
 #include <flutter/plugin_registrar_windows.h>
 
 #include "cookie_manager.h"
+#include "web_storage_manager.h"
 #include "headless_in_app_webview/headless_in_app_webview_manager.h"
 #include "in_app_browser/in_app_browser_manager.h"
 #include "in_app_webview/in_app_webview_manager.h"
@@ -34,6 +35,7 @@ namespace flutter_inappwebview_plugin
     inAppBrowserManager = std::make_unique<InAppBrowserManager>(this);
     headlessInAppWebViewManager = std::make_unique<HeadlessInAppWebViewManager>(this);
     cookieManager = std::make_unique<CookieManager>(this);
+    webStorageManager = std::make_unique<WebStorageManager>(this);
     platformUtil = std::make_unique<PlatformUtil>(this);
 
     window_proc_id = registrar->RegisterTopLevelWindowProcDelegate(
@@ -53,6 +55,7 @@ namespace flutter_inappwebview_plugin
     inAppBrowserManager = nullptr;
     headlessInAppWebViewManager = nullptr;
     cookieManager = nullptr;
+    webStorageManager = nullptr;
     platformUtil = nullptr;
   }
 

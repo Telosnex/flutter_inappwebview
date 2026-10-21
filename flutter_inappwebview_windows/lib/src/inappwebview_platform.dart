@@ -11,6 +11,7 @@ import 'web_message/web_message_listener.dart';
 import 'web_message/web_message_port.dart';
 import 'web_notification/web_notification_controller.dart';
 import 'web_storage/web_storage.dart';
+import 'web_storage/web_storage_manager.dart';
 import 'webview_environment/webview_environment.dart';
 
 /// Implementation of [InAppWebViewPlatform] using the WebView2 API.
@@ -321,8 +322,19 @@ class WindowsInAppWebViewPlatform extends InAppWebViewPlatform {
   /// This function should only be called by the app-facing package.
   /// Look at using [WebStorageManager] in `flutter_inappwebview` instead.
   @override
-  PlatformWebStorageManager createPlatformWebStorageManagerStatic() {
-    return _PlatformWebStorageManager.static();
+  WindowsWebStorageManager createPlatformWebStorageManagerStatic() {
+    return WindowsWebStorageManager.static();
+  }
+
+  /// Creates a new [WindowsWebStorageManager].
+  ///
+  /// This function should only be called by the app-facing package.
+  /// Look at using [WebStorageManager] in `flutter_inappwebview` instead.
+  @override
+  WindowsWebStorageManager createPlatformWebStorageManager(
+    PlatformWebStorageManagerCreationParams params,
+  ) {
+    return WindowsWebStorageManager(params);
   }
 
   /// Creates a new empty [PlatformChromeSafariBrowser] to access static methods.
@@ -584,18 +596,6 @@ class _PlatformWebAuthenticationSession
       );
 
   factory _PlatformWebAuthenticationSession.static() => _staticValue;
-}
-
-class _PlatformWebStorageManager extends PlatformWebStorageManager {
-  _PlatformWebStorageManager(PlatformWebStorageManagerCreationParams params)
-    : super.implementation(params);
-
-  static final _PlatformWebStorageManager _staticValue =
-      _PlatformWebStorageManager(
-        const PlatformWebStorageManagerCreationParams(),
-      );
-
-  factory _PlatformWebStorageManager.static() => _staticValue;
 }
 
 class _PlatformWebViewFeature extends PlatformWebViewFeature {

@@ -28,6 +28,10 @@ class WindowsWebStorageManagerCreationParams
 }
 
 ///{@macro flutter_inappwebview_platform_interface.PlatformWebStorageManager}
+///
+///On Windows only [removeDataModifiedSince] is implemented. It clears the
+///profile of the default WebViewEnvironment through a temporary WebView2, so
+///it works when no WebView is open.
 class WindowsWebStorageManager extends PlatformWebStorageManager
     with ChannelController {
   /// Creates a new [WindowsWebStorageManager].
@@ -75,67 +79,6 @@ class WindowsWebStorageManager extends PlatformWebStorageManager
   }
 
   Future<dynamic> _handleMethod(MethodCall call) async {}
-
-  @override
-  Future<List<WebsiteDataRecord>> fetchDataRecords({
-    required Set<WebsiteDataType> dataTypes,
-  }) async {
-    List<WebsiteDataRecord> recordList = [];
-    List<String> dataTypesList = [];
-    for (var dataType in dataTypes) {
-      if (dataType.isSupported()) {
-        dataTypesList.add(dataType.toNativeValue()!);
-      }
-    }
-    Map<String, dynamic> args = <String, dynamic>{};
-    args.putIfAbsent("dataTypes", () => dataTypesList);
-    List<Map<dynamic, dynamic>> records =
-        (await channel?.invokeMethod<List>(
-          'fetchDataRecords',
-          args,
-        ))?.cast<Map<dynamic, dynamic>>() ??
-        [];
-    for (var record in records) {
-      List<String> dataTypesString = record["dataTypes"].cast<String>();
-      Set<WebsiteDataType> dataTypes = Set();
-      for (var dataTypeValue in dataTypesString) {
-        var dataType = WebsiteDataType.fromNativeValue(dataTypeValue);
-        if (dataType != null) {
-          dataTypes.add(dataType);
-        }
-      }
-      recordList.add(
-        WebsiteDataRecord(
-          displayName: record["displayName"],
-          dataTypes: dataTypes,
-        ),
-      );
-    }
-    return recordList;
-  }
-
-  @override
-  Future<void> removeDataFor({
-    required Set<WebsiteDataType> dataTypes,
-    required List<WebsiteDataRecord> dataRecords,
-  }) async {
-    List<String> dataTypesList = [];
-    for (var dataType in dataTypes) {
-      if (dataType.isSupported()) {
-        dataTypesList.add(dataType.toNativeValue()!);
-      }
-    }
-
-    List<Map<String, dynamic>> recordList = [];
-    for (var record in dataRecords) {
-      recordList.add(record.toMap());
-    }
-
-    Map<String, dynamic> args = <String, dynamic>{};
-    args.putIfAbsent("dataTypes", () => dataTypesList);
-    args.putIfAbsent("recordList", () => recordList);
-    await channel?.invokeMethod('removeDataFor', args);
-  }
 
   @override
   Future<void> removeDataModifiedSince({

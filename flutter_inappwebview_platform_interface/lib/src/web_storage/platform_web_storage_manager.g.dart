@@ -15,6 +15,7 @@ extension _PlatformWebStorageManagerCreationParamsClassSupported
   ///- iOS WKWebView 9.0+
   ///- Linux WPE WebKit
   ///- macOS WKWebView
+  ///- Windows WebView2
   ///
   ///Use the [PlatformWebStorageManagerCreationParams.isClassSupported] method to check if this class is supported at runtime.
   ///{@endtemplate}
@@ -25,6 +26,7 @@ extension _PlatformWebStorageManagerCreationParamsClassSupported
           TargetPlatform.iOS,
           TargetPlatform.linux,
           TargetPlatform.macOS,
+          TargetPlatform.windows,
         ].contains(platform ?? defaultTargetPlatform);
   }
 }
@@ -38,6 +40,7 @@ extension _PlatformWebStorageManagerClassSupported
   ///- iOS WKWebView 9.0+ ([Official API - WKWebsiteDataStore](https://developer.apple.com/documentation/webkit/wkwebsitedatastore))
   ///- Linux WPE WebKit ([Official API - WebKitWebsiteDataManager](https://wpewebkit.org/reference/stable/wpe-webkit-2.0/class.WebsiteDataManager.html))
   ///- macOS WKWebView ([Official API - WKWebsiteDataStore](https://developer.apple.com/documentation/webkit/wkwebsitedatastore))
+  ///- Windows WebView2 ([Official API - ICoreWebView2Profile2](https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2profile2))
   ///
   ///Use the [PlatformWebStorageManager.isClassSupported] method to check if this class is supported at runtime.
   ///{@endtemplate}
@@ -48,6 +51,7 @@ extension _PlatformWebStorageManagerClassSupported
           TargetPlatform.iOS,
           TargetPlatform.linux,
           TargetPlatform.macOS,
+          TargetPlatform.windows,
         ].contains(platform ?? defaultTargetPlatform);
   }
 }
@@ -159,6 +163,8 @@ enum PlatformWebStorageManagerMethod {
   ///- iOS WKWebView 9.0+ ([Official API - WKWebsiteDataStore.removeData](https://developer.apple.com/documentation/webkit/wkwebsitedatastore/1532938-removedata))
   ///- Linux WPE WebKit ([Official API - webkit_website_data_manager_clear](https://wpewebkit.org/reference/stable/wpe-webkit-2.0/method.WebsiteDataManager.clear.html))
   ///- macOS WKWebView ([Official API - WKWebsiteDataStore.removeData](https://developer.apple.com/documentation/webkit/wkwebsitedatastore/1532938-removedata))
+  ///- Windows WebView2 ([Official API - ICoreWebView2Profile2.ClearBrowsingDataInTimeRange](https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2profile2#clearbrowsingdataintimerange)):
+  ///    - Uses the default WebViewEnvironment. WebsiteDataType.ALL clears the whole WebView2 profile, including autofill, saved passwords, history and settings. Session storage is in memory only and is not cleared.
   ///
   ///**Parameters - Officially Supported Platforms/Implementations**:
   ///- [dataTypes]: all platforms
@@ -221,6 +227,7 @@ extension _PlatformWebStorageManagerMethodSupported
               TargetPlatform.iOS,
               TargetPlatform.linux,
               TargetPlatform.macOS,
+              TargetPlatform.windows,
             ].contains(platform ?? defaultTargetPlatform);
     }
   }

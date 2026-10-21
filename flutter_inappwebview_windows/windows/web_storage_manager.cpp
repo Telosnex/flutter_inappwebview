@@ -1,4 +1,6 @@
 #include <ctime>
+#include <wil/com.h>
+#include <wrl.h>
 #include <WebView2.h>
 
 #include "types/callbacks_complete.h"

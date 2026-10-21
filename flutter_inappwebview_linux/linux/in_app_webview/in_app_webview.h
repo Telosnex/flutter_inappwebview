@@ -597,6 +597,10 @@ class InAppWebView {
   // Callbacks that Dart answers later hold a weak_ptr to this. When it has
   // expired, the view is gone and the callback must not touch its members.
   std::shared_ptr<int> lifetime_token_ = std::make_shared<int>(0);
+
+  // Runs pending main loop events. Returns false if this view was disposed
+  // while they ran; the caller must then return without touching `this`.
+  bool SpinMainLoopAndCheckAlive();
   void DisposeLateCallbacks();
   std::vector<int64_t> opened_window_ids_;  // Popups this view opened (window.open)
 

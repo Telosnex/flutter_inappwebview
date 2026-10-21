@@ -92,20 +92,24 @@ void HeadlessInAppWebView::loadInitialContent(const InAppWebViewCreationParams& 
     return;
   }
 
-  std::fprintf(stderr, "[flutter_inappwebview_linux] HeadlessInAppWebView loadInitialContent start id=%s\n", id_.c_str());
+  // loadData and loadFile run the main loop, which can dispose this headless
+  // view (C9a). Keep the web view and the id in locals; touch no member after.
+  std::shared_ptr<InAppWebView> webview = webview_;
+  const std::string id = id_;
+  std::fprintf(stderr, "[flutter_inappwebview_linux] HeadlessInAppWebView loadInitialContent start id=%s\n", id.c_str());
   if (webviewParams.initialUrlRequest.has_value()) {
-    webview_->loadUrl(webviewParams.initialUrlRequest.value());
+    webview->loadUrl(webviewParams.initialUrlRequest.value());
   } else if (webviewParams.initialData.has_value()) {
     std::string mimeType = webviewParams.initialDataMimeType.value_or("text/html");
     std::string encoding = webviewParams.initialDataEncoding.value_or("UTF-8");
     std::string baseUrl = webviewParams.initialDataBaseUrl.value_or("about:blank");
-    webview_->loadData(webviewParams.initialData.value(), mimeType, encoding, baseUrl);
+    webview->loadData(webviewParams.initialData.value(), mimeType, encoding, baseUrl);
   } else if (webviewParams.initialFile.has_value()) {
-    webview_->loadFile(webviewParams.initialFile.value());
+    webview->loadFile(webviewParams.initialFile.value());
   } else {
-    std::fprintf(stderr, "[flutter_inappwebview_linux] HeadlessInAppWebView loadInitialContent no initial content id=%s\n", id_.c_str());
+    std::fprintf(stderr, "[flutter_inappwebview_linux] HeadlessInAppWebView loadInitialContent no initial content id=%s\n", id.c_str());
   }
-  std::fprintf(stderr, "[flutter_inappwebview_linux] HeadlessInAppWebView loadInitialContent done id=%s\n", id_.c_str());
+  std::fprintf(stderr, "[flutter_inappwebview_linux] HeadlessInAppWebView loadInitialContent done id=%s\n", id.c_str());
 }
 
 void HeadlessInAppWebView::dispose() {

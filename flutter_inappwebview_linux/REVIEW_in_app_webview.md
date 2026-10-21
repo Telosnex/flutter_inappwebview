@@ -51,7 +51,7 @@ In every ASan row, the memory was freed by `~HeadlessInAppWebView`, which `dispo
 | C4d | Permission answer after dispose. | **Blocked** by W18. |
 | C4e | HTTP auth answer after dispose. | **Blocked** by W16. |
 | C4f | TLS answer after dispose. | **Blocked** by W17. |
-| C4g | `onCreateWindow` answer after the opener is disposed. | Not reproduced (normal and ASan). |
+| C4g | `onCreateWindow` answer after the opener is disposed. | Not reproduced (normal and ASan). Closed 2026-10-21 (owner): the path barely runs while popups do not work (W19). |
 | C4h | `createWebMessageChannel` racing dispose. The completion of the JS call writes `web_message_channels_` through a raw `self`. | **ASan**: write from the `evaluateJavascript` completion. Passes in a normal build. |
 | C5 | `UserContentController` connects `script-message-with-reply-received::callHandler` with a raw `this` and never disconnects it. A popup shares the content manager of its opener. When the popup is destroyed, it removes the scripts and the handler of the opener and leaves a dangling handler. | **Blocked** by W19: the popup never gets a bridge. |
 | C5b | (Withdrawn.) A handled popup stays in the manager after its opener is disposed. | Not reproduced. The hooks show no leaked `WebKitWebView`. |
@@ -61,11 +61,11 @@ In every ASan row, the memory was freed by `~HeadlessInAppWebView`, which `dispo
 | C8b | The date dialog: the same problem through `DateDialogContext`. | **ASan**: use in `OnDateDialogResponse`. Red in a normal build. |
 | C8c | The file chooser: the same problem. `HideFileChooser` also refuses to close a dialog less than 200 ms after it opened. | **ASan**: use in `OnFileChooserDialogResponse`. In a normal build, the test fails because the dialog stays open after dispose. |
 | C8d | A `<select>` popup that is open when the view is disposed. | **Red**: the app stops when the widget is removed, in both builds, with no ASan report. `C8d-control` does the same steps without the popup and passes. The cause is not known. |
-| C9a | `loadData`, `loadFile`, `postUrl` and `reloadFromOrigin` run `while (g_main_context_iteration(NULL, FALSE))`. A dispose of the same view can run inside this loop. Then the method continues on `this`. `pasteFromClipboard` has the same problem through `gtk_clipboard_wait_for_text`. | Not reproduced (normal and ASan). The re-entrancy is real in the code. |
+| C9a | `loadData`, `loadFile`, `postUrl` and `reloadFromOrigin` run `while (g_main_context_iteration(NULL, FALSE))`. A dispose of the same view can run inside this loop. Then the method continues on `this`. `pasteFromClipboard` has the same problem through `gtk_clipboard_wait_for_text`. | Not reproduced (normal and ASan). Why: Flutter runs queued platform messages in one batch, and a nested `g_main_context_iteration` does not re-enter that source; the dispose has to arrive while the spin runs. **Fixed 2026-10-21** without a red test: the four spins return when `lifetime_token_` expired (`SpinMainLoopAndCheckAlive`), the two pastes check it after `gtk_clipboard_wait_for_text`, and `HeadlessInAppWebView::loadInitialContent` keeps the web view and id in locals. |
 | C9b | `postUrl` uses a raw `this` in a 100 ms timeout. | **ASan**: use in the `postUrl` timeout. Red in a normal build. |
 | C10 | `OnLoadFailedWithTlsErrors` reads `failing_uri` in the asynchronous "proceed" callback. That pointer is valid only during the signal. | **Blocked** by W17. |
-| C11 | EGL: `GetCurrentEglImage` returns the image handle after it releases the lock. The raster thread binds the image later, and the main thread can destroy it on the next frame. The shipped path on this VM is the SHM copy, not EGL. | No test. Found by reading. |
-| C12 | `setSize` sends zero and negative sizes to WPE. | Not reproduced (normal and ASan). |
+| C11 | EGL: `GetCurrentEglImage` returns the image handle after it releases the lock. The raster thread binds the image later, and the main thread can destroy it on the next frame. The shipped path on this VM is the SHM copy, not EGL. | No test. Found by reading. Rechecked 2026-10-21: the GL texture is the default whenever GDK has GL; zero-copy EGL import runs only for DMA-BUF buffers, so on GPU hardware, not on this VM (SHM buffers). Worse than first described: `OnBufferRendered` destroys the old EGL image and releases its buffer before the texture gets the new one, so the raster thread can bind a destroyed image; and if EGL import later fails, the texture keeps the destroyed handle. |
+| C12 | `setSize` sends zero and negative sizes to WPE. | Not reproduced (normal and ASan). Closed 2026-10-21 (owner). |
 
 ## 2. Security
 

@@ -1702,6 +1702,15 @@ void InAppWebView::loadUrl(const std::shared_ptr<URLRequest>& urlRequest) {
   g_object_unref(request);
 }
 
+bool InAppWebView::SpinMainLoopAndCheckAlive() {
+  std::weak_ptr<int> alive = lifetime_token_;
+  while (g_main_context_iteration(NULL, FALSE)) {
+    if (alive.expired())
+      return false;
+  }
+  return !alive.expired();
+}
+
 void InAppWebView::loadData(const std::string& data, const std::string& mime_type,
                             const std::string& encoding, const std::string& base_url) {
   if (webview_ == nullptr)
@@ -1709,8 +1718,10 @@ void InAppWebView::loadData(const std::string& data, const std::string& mime_typ
 
   g_message("InAppWebView: loadData() called while loading, stopping current load first");
   webkit_web_view_stop_loading(webview_);
-  // Give WebKit/WPE FDO a moment to clean up pending operations
-  while (g_main_context_iteration(NULL, FALSE)) { }
+  // Give WebKit/WPE FDO a moment to clean up pending operations. The spin
+  // can run a dispose of this view (C9a): stop if it did.
+  if (!SpinMainLoopAndCheckAlive())
+    return;
 
   GBytes* bytes = g_bytes_new(data.data(), data.size());
   webkit_web_view_load_bytes(webview_, bytes, mime_type.c_str(), encoding.c_str(),
@@ -1724,8 +1735,10 @@ void InAppWebView::loadFile(const std::string& asset_file_path) {
 
   g_message("InAppWebView: loadFile() called while loading, stopping current load first");
   webkit_web_view_stop_loading(webview_);
-  // Give WebKit/WPE FDO a moment to clean up pending operations
-  while (g_main_context_iteration(NULL, FALSE)) { }
+  // Give WebKit/WPE FDO a moment to clean up pending operations. The spin
+  // can run a dispose of this view (C9a): stop if it did.
+  if (!SpinMainLoopAndCheckAlive())
+    return;
 
   // Get the path to the running executable
   char exe_path[PATH_MAX];
@@ -1771,8 +1784,10 @@ void InAppWebView::XhrLoad(const std::string& url, const std::string& method,
     return;
 
   webkit_web_view_stop_loading(webview_);
-  // Give WebKit/WPE FDO a moment to clean up pending operations
-  while (g_main_context_iteration(NULL, FALSE)) { }
+  // Give WebKit/WPE FDO a moment to clean up pending operations. The spin
+  // can run a dispose of this view (C9a): stop if it did.
+  if (!SpinMainLoopAndCheckAlive())
+    return;
 
   gchar* base64_data = g_base64_encode(postData.data(), postData.size());
   std::string setHeaders;
@@ -1845,8 +1860,10 @@ void InAppWebView::reloadFromOrigin() {
 
   g_message("InAppWebView: reloadFromOrigin() called while loading, stopping current load first");
   webkit_web_view_stop_loading(webview_);
-  // Give WebKit/WPE FDO a moment to clean up pending operations
-  while (g_main_context_iteration(NULL, FALSE)) { }
+  // Give WebKit/WPE FDO a moment to clean up pending operations. The spin
+  // can run a dispose of this view (C9a): stop if it did.
+  if (!SpinMainLoopAndCheckAlive())
+    return;
   
   webkit_web_view_reload_bypass_cache(webview_);
 }
@@ -6739,7 +6756,14 @@ void InAppWebView::pasteFromClipboard() {
 
   // Get text from system clipboard
   GtkClipboard* clipboard = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+  // Waiting for the clipboard runs a nested main loop, which can dispose
+  // this view (C9a).
+  std::weak_ptr<int> alive = lifetime_token_;
   gchar* text = gtk_clipboard_wait_for_text(clipboard);
+  if (alive.expired()) {
+    g_free(text);
+    return;
+  }
   
   if (text != nullptr && strlen(text) > 0) {
     if (jsEnabled) {
@@ -6833,7 +6857,14 @@ void InAppWebView::pasteAsPlainText() {
 
   // Get text from system clipboard
   GtkClipboard* clipboard = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+  // Waiting for the clipboard runs a nested main loop, which can dispose
+  // this view (C9a).
+  std::weak_ptr<int> alive = lifetime_token_;
   gchar* text = gtk_clipboard_wait_for_text(clipboard);
+  if (alive.expired()) {
+    g_free(text);
+    return;
+  }
   
   if (text != nullptr && strlen(text) > 0) {
     if (jsEnabled) {

@@ -311,13 +311,12 @@ class InAppWebView {
   bool HasDmaBufExport() const;
   bool GetDmaBufFd(int* fd, uint32_t* stride, uint32_t* width, uint32_t* height) const;
 
-  // EGL image access (for zero-copy texture sharing with Flutter)
-  // Returns the newest EGL image (EGLImageKHR, from .get()) and dimensions,
-  // or null. Hold the returned pointer for as long as the image may be bound:
-  // the image stays valid and its buffer is not given back to WPE until the
-  // last holder drops it (C11).
-  std::shared_ptr<void> GetCurrentEglImage(uint32_t* out_width,
-                                           uint32_t* out_height) const;
+  // Newest zero-copy frame and its dimensions, or null. Turn it into an EGL
+  // image with wpe_frame_egl_image_for_current_context. Hold the returned
+  // pointer for as long as the image may be bound: its buffer is not given
+  // back to WPE until the last holder drops it (C11).
+  std::shared_ptr<void> GetCurrentFrame(uint32_t* out_width,
+                                        uint32_t* out_height) const;
 
   // Skip pixel readback - when using zero-copy EGL texture mode, we don't need
   // to read pixels back to CPU. This improves performance and avoids GL context issues.
@@ -493,8 +492,8 @@ class InAppWebView {
   
   // Buffer rendering for WPEPlatform
   WPEBuffer* current_buffer_ = nullptr;   // Newest copied (SHM/pixels) buffer, held
-  // Newest zero-copy frame: an EGL image and the buffer behind it, shared
-  // with the texture that binds it (C11). See MakeEglFrame.
+  // Newest zero-copy frame: a DMA-BUF buffer, shared with the texture that
+  // binds it (C11). See MakeFrame.
   std::shared_ptr<void> current_egl_frame_;
   // Set when the view closes; frames released after that skip
   // wpe_view_buffer_released.

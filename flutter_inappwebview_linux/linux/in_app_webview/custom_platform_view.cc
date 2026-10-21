@@ -146,7 +146,7 @@ CustomPlatformView::CustomPlatformView(FlBinaryMessenger* messenger,
       // Also when null: after a fall back to copied pixels the texture
       // must stop binding the old image (C11).
       inappwebview_egl_texture_set_egl_image(
-          egl_texture_, webview_->GetCurrentEglImage(&width, &height), width,
+          egl_texture_, webview_->GetCurrentFrame(&width, &height), width,
           height);
     }
     MarkTextureFrameAvailable();

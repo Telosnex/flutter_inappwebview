@@ -8,6 +8,7 @@
 #include "../utils/gl_context.h"
 #include "../utils/log.h"
 #include "in_app_webview.h"
+#include "wpe_frame_egl_image.h"
 
 // Use the shared HasCurrentGLContext from gl_context.h
 static gboolean has_current_gl_context() {
@@ -150,8 +151,10 @@ static gboolean inappwebview_egl_texture_populate(FlTextureGL* texture, uint32_t
   // This is updated by the on_frame_available callback before Flutter is notified
   if (self->current_egl_image != nullptr && self->width > 0 && self->height > 0) {
     std::shared_ptr<void> frame = self->current_egl_image;
+    void* image = nullptr;
     // Check if EGL image extension is available
-    if (check_egl_image_extension(self)) {
+    if (check_egl_image_extension(self) &&
+        (image = wpe_frame_egl_image_for_current_context(frame)) != nullptr) {
       // Create texture if needed
       if (!self->texture_initialized) {
         glGenTextures(1, &self->texture_id);
@@ -161,7 +164,7 @@ static gboolean inappwebview_egl_texture_populate(FlTextureGL* texture, uint32_t
       // Bind the EGL image to our texture - ZERO-COPY!
       glBindTexture(GL_TEXTURE_2D, self->texture_id);
       self->glEGLImageTargetTexture2DOES(GL_TEXTURE_2D,
-                                         static_cast<GLeglImageOES>(frame.get()));
+                                         static_cast<GLeglImageOES>(image));
 
       // Set texture parameters
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);

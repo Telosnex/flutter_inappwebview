@@ -1,4 +1,5 @@
 #include "in_app_browser.h"
+#include "../in_app_webview/wpe_frame_egl_image.h"
 
 #include <gdk/gdk.h>
 #include <epoxy/gl.h>
@@ -1215,10 +1216,11 @@ gboolean InAppBrowser::OnGlAreaRender(GtkGLArea* area, GdkGLContext* context,
 
   // Try to get EGL image for zero-copy rendering
   uint32_t imgWidth = 0, imgHeight = 0;
-  // Held for the draw: the image stays valid until it returns (C11).
+  // Held for the draw: the image stays valid until it returns (C11). Made
+  // on this GtkGLArea's own display.
   std::shared_ptr<void> eglFrame =
-      browser->webView_->GetCurrentEglImage(&imgWidth, &imgHeight);
-  void* eglImage = eglFrame.get();
+      browser->webView_->GetCurrentFrame(&imgWidth, &imgHeight);
+  void* eglImage = wpe_frame_egl_image_for_current_context(eglFrame);
 
   if (eglImage != nullptr && imgWidth > 0 && imgHeight > 0) {
     // Get the glEGLImageTargetTexture2DOES function

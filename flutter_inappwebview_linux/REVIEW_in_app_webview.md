@@ -64,7 +64,7 @@ In every ASan row, the memory was freed by `~HeadlessInAppWebView`, which `dispo
 | C9a | `loadData`, `loadFile`, `postUrl` and `reloadFromOrigin` run `while (g_main_context_iteration(NULL, FALSE))`. A dispose of the same view can run inside this loop. Then the method continues on `this`. `pasteFromClipboard` has the same problem through `gtk_clipboard_wait_for_text`. | Not reproduced (normal and ASan). Why: Flutter runs queued platform messages in one batch, and a nested `g_main_context_iteration` does not re-enter that source; the dispose has to arrive while the spin runs. **Fixed 2026-10-21** without a red test: the four spins return when `lifetime_token_` expired (`SpinMainLoopAndCheckAlive`), the two pastes check it after `gtk_clipboard_wait_for_text`, and `HeadlessInAppWebView::loadInitialContent` keeps the web view and id in locals. |
 | C9b | `postUrl` uses a raw `this` in a 100 ms timeout. | **ASan**: use in the `postUrl` timeout. Red in a normal build. |
 | C10 | `OnLoadFailedWithTlsErrors` reads `failing_uri` in the asynchronous "proceed" callback. That pointer is valid only during the signal. | **Blocked** by W17. |
-| C11 | EGL: `GetCurrentEglImage` returns the image handle after it releases the lock. The raster thread binds the image later, and the main thread can destroy it on the next frame. The shipped path on this VM is the SHM copy, not EGL. | No test. Found by reading. Rechecked 2026-10-21: the GL texture is the default whenever GDK has GL; zero-copy EGL import runs only for DMA-BUF buffers, so on GPU hardware, not on this VM (SHM buffers). Worse than first described: `OnBufferRendered` destroys the old EGL image and releases its buffer before the texture gets the new one, so the raster thread can bind a destroyed image; and if EGL import later fails, the texture keeps the destroyed handle. **Fixed 2026-10-21, not yet run on GPU hardware.** Also found: `wpe_buffer_import_to_egl_image` is transfer none (WPEBufferDMABuf caches the image and destroys it in dispose, WebKit 2.54.1), so the plugin destroyed images it did not own; a reused buffer returned the destroyed image. Now a shared frame holds the buffer (never destroys the image) and returns it to WPE on the main thread when the last holder, view or texture, drops it; the texture keeps the frame it bound until it binds another, and re-specifies (not sub-uploads) when it falls back to copied pixels. Legacy FDO path unchanged. |
+| C11 | EGL: `GetCurrentEglImage` returns the image handle after it releases the lock. The raster thread binds the image later, and the main thread can destroy it on the next frame. The shipped path on this VM is the SHM copy, not EGL. | No test. Found by reading. Rechecked 2026-10-21: the GL texture is the default whenever GDK has GL; zero-copy EGL import runs only for DMA-BUF buffers, so on GPU hardware, not on this VM (SHM buffers). Worse than first described: `OnBufferRendered` destroys the old EGL image and releases its buffer before the texture gets the new one, so the raster thread can bind a destroyed image; and if EGL import later fails, the texture keeps the destroyed handle. **Fixed 2026-10-21; run on a Raspberry Pi CM5 (V3D) under labwc, all frames DMA-BUF.** Also found: `wpe_buffer_import_to_egl_image` is transfer none (WPEBufferDMABuf caches the image and destroys it in dispose, WebKit 2.54.1), so the plugin destroyed images it did not own; a reused buffer returned the destroyed image. Now a shared frame holds the buffer (never destroys the image) and returns it to WPE on the main thread when the last holder, view or texture, drops it; the texture keeps the frame it bound until it binds another, and re-specifies (not sub-uploads) when it falls back to copied pixels. Legacy FDO path unchanged. |
 | C12 | `setSize` sends zero and negative sizes to WPE. | Not reproduced (normal and ASan). Closed 2026-10-21 (owner). |
 
 ## 2. Security
@@ -262,3 +262,27 @@ Commit `2b36bdb79`. Full suite, normal and ASan builds: the only reds are S4b an
 - **N1, fixed.** A script runs only where `window.location.origin` is one of its rules. A rule is an exact origin, as for `javaScriptHandlersOriginAllowList` (S1). `'*'` or null allows every origin, and an empty list allows none. An empty bridge list turns the bridge off. WebKit's allow list ignores ports, so the check is in JS, as on iOS, macOS and Windows. Those platforms use regular expressions; Android allows `*.` subdomain rules. Linux does neither.
 - **N1 rule format, owner decision (2026-10-20): Android rules.** All four Linux allow lists (handlers, bridge, plugin scripts, user scripts) accept `'*'`, exact origins, and `scheme://*.domain[:port]` subdomain rules (any depth, not the domain itself). Regular expressions are not supported: Darwin's unanchored `RegExp.test` has the S1 hole. The handler list now blocks every origin when empty, as documented. Docs have a NOTE for Linux. Tests S1d, S1e, N1e.
 - **N2, fixed. The cause was not the listener.** If a load starts before the previous load finishes, WebKit finishes the old load after the view URI is already the new URL. `onLoadStop` then reported the new URL for the old document. W23 waited for that event and ran JS in the old document. A `load-finished` while another load runs is now skipped. W23 again adds its listener during the first load.
+
+## Black WebView on GPU hardware (2026-10-21)
+
+Found while testing C11 on a Raspberry Pi CM5 (V3D, labwc, WPEPlatform):
+every visible WebView drew black. The plugin imported each DMA-BUF frame as
+an EGL image on WPE's offscreen display (`wpe_buffer_import_to_egl_image`),
+then bound it in Flutter's GTK GL context, which uses GDK's EGL display.
+An EGL image works only on the display that made it: every
+`glEGLImageTargetTexture2DOES` failed with `GL_INVALID_VALUE`. The VM never
+showed it because it only gets SHM buffers.
+
+Fix: `wpe_frame_egl_image.cc`. Frames carry the DMA-BUF `WPEBuffer`; the
+texture and the in-app browser make the EGL image on their current display
+from the buffer's planes (`EGL_LINUX_DMA_BUF_EXT`, with modifiers when
+supported), cached per buffer and display and destroyed when WebKit frees
+the buffer. No pixel copies. If there is no EGL display (GDK on X11 uses
+GLX) or an import fails, zero-copy turns off for the process and DMA-BUF
+frames go through `wpe_buffer_import_to_pixels`.
+
+Pi result: the page animates on screen (8 of 8 captures differ); 8,400
+binds in 2.5 minutes, 0 GL errors; memory and file descriptors flat
+(RSS 219.7 to 220.1 MB, 62 to 63 fds); fallback never triggered.
+Not tested: the X11/GLX fallback, and GPUs other than V3D.
+

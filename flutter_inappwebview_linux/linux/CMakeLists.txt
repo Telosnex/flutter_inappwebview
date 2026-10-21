@@ -203,6 +203,7 @@ list(APPEND PLUGIN_SOURCES
   "in_app_webview/custom_platform_view.cc"
   "in_app_webview/inappwebview_texture.cc"
   "in_app_webview/inappwebview_egl_texture.cc"
+  "in_app_webview/wpe_frame_egl_image.cc"
   "in_app_webview/in_app_webview.cc"
   "in_app_webview/in_app_webview_settings.cc"
   "in_app_webview/user_content_controller.cc"

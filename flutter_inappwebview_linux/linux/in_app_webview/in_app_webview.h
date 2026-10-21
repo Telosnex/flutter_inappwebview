@@ -312,9 +312,12 @@ class InAppWebView {
   bool GetDmaBufFd(int* fd, uint32_t* stride, uint32_t* width, uint32_t* height) const;
 
   // EGL image access (for zero-copy texture sharing with Flutter)
-  // Returns the current EGL image handle (EGLImageKHR) and dimensions.
-  // The EGL image is owned by WPE and remains valid until the next frame.
-  void* GetCurrentEglImage(uint32_t* out_width, uint32_t* out_height) const;
+  // Returns the newest EGL image (EGLImageKHR, from .get()) and dimensions,
+  // or null. Hold the returned pointer for as long as the image may be bound:
+  // the image stays valid and its buffer is not given back to WPE until the
+  // last holder drops it (C11).
+  std::shared_ptr<void> GetCurrentEglImage(uint32_t* out_width,
+                                           uint32_t* out_height) const;
 
   // Skip pixel readback - when using zero-copy EGL texture mode, we don't need
   // to read pixels back to CPU. This improves performance and avoids GL context issues.
@@ -489,8 +492,14 @@ class InAppWebView {
   WPEToplevel* wpe_toplevel_ = nullptr;   // From wpe_view_get_toplevel, not owned
   
   // Buffer rendering for WPEPlatform
-  WPEBuffer* current_buffer_ = nullptr;   // Current frame buffer (borrowed, not owned)
-  void* current_egl_image_ = nullptr;     // EGL image created from current buffer
+  WPEBuffer* current_buffer_ = nullptr;   // Newest copied (SHM/pixels) buffer, held
+  // Newest zero-copy frame: an EGL image and the buffer behind it, shared
+  // with the texture that binds it (C11). See MakeEglFrame.
+  std::shared_ptr<void> current_egl_frame_;
+  // Set when the view closes; frames released after that skip
+  // wpe_view_buffer_released.
+  std::shared_ptr<std::atomic<bool>> view_closed_ =
+      std::make_shared<std::atomic<bool>>(false);
   uint32_t current_buffer_width_ = 0;     // Width of current buffer
   uint32_t current_buffer_height_ = 0;    // Height of current buffer
   gulong buffer_rendered_handler_ = 0;    // Signal handler ID for buffer-rendered

@@ -486,21 +486,14 @@ InAppWebView::~InAppWebView() {
   }
   
   // 4. Release any pending buffer back to WPE and clean up EGL image
+  std::shared_ptr<void> teardown_frame;
   {
     std::lock_guard<std::mutex> lock(wpe_buffer_mutex_);
     
-    // Clean up EGL image first (while display is still valid)
-    if (current_egl_image_ != nullptr && egl_display_ != nullptr) {
-      static PFNEGLDESTROYIMAGEKHRPROC eglDestroyImageKHR = nullptr;
-      if (eglDestroyImageKHR == nullptr) {
-        eglDestroyImageKHR = (PFNEGLDESTROYIMAGEKHRPROC)eglGetProcAddress("eglDestroyImageKHR");
-      }
-      if (eglDestroyImageKHR != nullptr) {
-        eglDestroyImageKHR(static_cast<EGLDisplay>(egl_display_), 
-                           static_cast<EGLImageKHR>(current_egl_image_));
-      }
-      current_egl_image_ = nullptr;
-    }
+    // Drop our hold on the zero-copy frame. Its image belongs to its
+    // buffer; a texture may still hold it, and releases the buffer later
+    // (C11). Released here directly if nothing else holds it.
+    teardown_frame = std::move(current_egl_frame_);
     
     // Release pending buffer back to WPE
     if (current_buffer_ != nullptr) {
@@ -514,6 +507,11 @@ InAppWebView::~InAppWebView() {
     current_buffer_height_ = 0;
   }
   
+  // Released before the view closes, like current_buffer_ above. A frame a
+  // texture still holds is released after the close, without
+  // wpe_view_buffer_released.
+  teardown_frame.reset();
+  view_closed_->store(true);
   if (wpe_view_ != nullptr) {
     wpe_view_closed(wpe_view_);
   }
@@ -1383,6 +1381,50 @@ void InAppWebView::OnExportDmaBuf(::wpe_fdo_egl_exported_image* image) {
 #endif
 
 #ifdef HAVE_WPE_PLATFORM
+namespace {
+
+struct EglFrameRelease {
+  WPEView* view;
+  WPEBuffer* buffer;
+  std::shared_ptr<std::atomic<bool>> view_closed;
+};
+
+gboolean ReleaseEglFrame(gpointer data) {
+  auto* release = static_cast<EglFrameRelease*>(data);
+  if (!release->view_closed->load()) {
+    wpe_view_buffer_released(release->view, release->buffer);
+  }
+  g_object_unref(release->buffer);
+  g_object_unref(release->view);
+  delete release;
+  return G_SOURCE_REMOVE;
+}
+
+// C11. A zero-copy frame: the EGL image of [buffer], shared by the web view
+// (newest frame) and the texture (frame it bound last). The image belongs to
+// the buffer: wpe_buffer_import_to_egl_image is transfer none, and
+// WPEBufferDMABuf caches the image and destroys it when the buffer is
+// disposed, so we never destroy it. Holding the buffer keeps the image valid;
+// not releasing it keeps WPE from drawing into it. When the last holder
+// drops the frame, the buffer goes back to WPE on the main thread (WPE is not
+// thread-safe; the texture may drop it on the raster thread).
+std::shared_ptr<void> MakeEglFrame(void* egl_image, WPEView* view,
+                                   WPEBuffer* buffer,
+                                   std::shared_ptr<std::atomic<bool>> view_closed) {
+  auto* release = new EglFrameRelease{WPE_VIEW(g_object_ref(view)),
+                                      WPE_BUFFER(g_object_ref(buffer)),
+                                      std::move(view_closed)};
+  return std::shared_ptr<void>(egl_image, [release](void*) {
+    if (g_main_context_is_owner(g_main_context_default())) {
+      ReleaseEglFrame(release);
+    } else {
+      g_idle_add(ReleaseEglFrame, release);
+    }
+  });
+}
+
+}  // namespace
+
 void InAppWebView::OnWpePlatformBufferRendered(WPEBuffer* buffer) {
   if (buffer == nullptr) {
     return;
@@ -1407,7 +1449,9 @@ void InAppWebView::OnWpePlatformBufferRendered(WPEBuffer* buffer) {
   
   
   WPEBuffer* previous_buffer = nullptr;
+  std::shared_ptr<void> previous_frame;
   bool buffer_handled = false;
+  bool buffer_is_frame = false;
   
   // Track EGL import failures to avoid repeated attempts
   // Static because if EGL fails once, it will likely keep failing (e.g., no GPU)
@@ -1419,19 +1463,12 @@ void InAppWebView::OnWpePlatformBufferRendered(WPEBuffer* buffer) {
     // Store reference to previous buffer - we'll release it AFTER importing the new one
     // This ensures the EGL image's backing memory stays valid until we have a new frame
     previous_buffer = current_buffer_;
-    
-    // Destroy previous EGL image if we created one
-    if (current_egl_image_ != nullptr && egl_display_ != nullptr) {
-      static PFNEGLDESTROYIMAGEKHRPROC eglDestroyImageKHR = nullptr;
-      if (eglDestroyImageKHR == nullptr) {
-        eglDestroyImageKHR = (PFNEGLDESTROYIMAGEKHRPROC)eglGetProcAddress("eglDestroyImageKHR");
-      }
-      if (eglDestroyImageKHR != nullptr) {
-        eglDestroyImageKHR(static_cast<EGLDisplay>(egl_display_), 
-                           static_cast<EGLImageKHR>(current_egl_image_));
-      }
-      current_egl_image_ = nullptr;
-    }
+    current_buffer_ = nullptr;
+
+    // Hand back our hold on the previous zero-copy frame. The texture may
+    // still hold it; its buffer returns to WPE when the texture lets go
+    // (C11). Dropped below, outside this lock.
+    previous_frame = std::move(current_egl_frame_);
     
     // Check buffer type to determine best rendering path
     bool is_dma_buf = WPE_IS_BUFFER_DMA_BUF(buffer);
@@ -1440,16 +1477,18 @@ void InAppWebView::OnWpePlatformBufferRendered(WPEBuffer* buffer) {
     // === Priority 1: Try EGL image import (zero-copy, best performance) ===
     // Only attempt EGL for DMA-BUF buffers (SHM buffers cannot be imported via EGL)
     // Skip if previous EGL attempts failed
-    if (egl_display_ != nullptr && 
+    if (egl_display_ != nullptr && wpe_view_ != nullptr &&
         is_dma_buf && !egl_import_failed_permanently) {
       GError* error = nullptr;
       void* egl_image = wpe_buffer_import_to_egl_image(buffer, &error);
       
       if (egl_image != nullptr) {
-        current_egl_image_ = egl_image;
+        current_egl_frame_ =
+            MakeEglFrame(egl_image, wpe_view_, buffer, view_closed_);
         current_buffer_width_ = buf_width;
         current_buffer_height_ = buf_height;
         buffer_handled = true;
+        buffer_is_frame = true;
       } else {
         // Mark EGL as permanently failed so we don't keep trying
         // This is common in VMs or software-only environments
@@ -1561,10 +1600,18 @@ void InAppWebView::OnWpePlatformBufferRendered(WPEBuffer* buffer) {
       debugLog("ERROR: No rendering method succeeded!");
     }
     
-    // Store reference to current buffer - we keep it until the NEXT frame arrives
-    // This ensures the EGL image's backing DMA-BUF memory stays valid
-    current_buffer_ = buffer;
+    // A copied buffer is held until the next frame. A zero-copy buffer is
+    // held by its frame instead.
+    if (!buffer_is_frame) {
+      current_buffer_ = buffer;
+    }
   }
+
+  // The frame took its own reference.
+  if (buffer_is_frame) {
+    g_object_unref(buffer);
+  }
+  previous_frame.reset();
   
   // Release the PREVIOUS buffer now that we have a new one
   // The previous EGL image has been destroyed and we have a new frame,
@@ -3814,7 +3861,7 @@ bool InAppWebView::CopyPixelBufferTo(uint8_t* dst, size_t dst_size, uint32_t* ou
 bool InAppWebView::HasDmaBufExport() const {
 #ifdef HAVE_WPE_PLATFORM
   std::lock_guard<std::mutex> lock(wpe_buffer_mutex_);
-  return current_egl_image_ != nullptr;
+  return current_egl_frame_ != nullptr;
 #elif defined(HAVE_WPE_BACKEND_LEGACY)
   std::lock_guard<std::mutex> lock(exported_image_mutex_);
   return exported_image_ != nullptr;
@@ -3849,12 +3896,13 @@ bool InAppWebView::GetDmaBufFd(int* fd, uint32_t* stride, uint32_t* width, uint3
 #endif
 }
 
-void* InAppWebView::GetCurrentEglImage(uint32_t* out_width, uint32_t* out_height) const {
+std::shared_ptr<void> InAppWebView::GetCurrentEglImage(uint32_t* out_width,
+                                                       uint32_t* out_height) const {
 #ifdef HAVE_WPE_PLATFORM
   // WPEPlatform: Return the EGL image from our buffer-rendered callback
   std::lock_guard<std::mutex> lock(wpe_buffer_mutex_);
   
-  if (current_egl_image_ == nullptr) {
+  if (current_egl_frame_ == nullptr) {
     if (out_width)
       *out_width = 0;
     if (out_height)
@@ -3867,7 +3915,7 @@ void* InAppWebView::GetCurrentEglImage(uint32_t* out_width, uint32_t* out_height
   if (out_height)
     *out_height = current_buffer_height_;
   
-  return current_egl_image_;
+  return current_egl_frame_;
   
 #elif defined(HAVE_WPE_BACKEND_LEGACY)
   // Protect exported_image_ access - OnExportDmaBuf may be called from WPE's thread
@@ -3890,8 +3938,10 @@ void* InAppWebView::GetCurrentEglImage(uint32_t* out_width, uint32_t* out_height
   if (out_height)
     *out_height = img_height;
 
-  // Return the EGL image handle (EGLImageKHR)
-  return wpe_fdo_egl_exported_image_get_egl_image(exported_image_);
+  // Return the EGL image handle (EGLImageKHR). Legacy FDO: not held past
+  // this call; C11 is fixed for WPEPlatform only.
+  return std::shared_ptr<void>(
+      wpe_fdo_egl_exported_image_get_egl_image(exported_image_), [](void*) {});
 #else
   // No backend available
   if (out_width)

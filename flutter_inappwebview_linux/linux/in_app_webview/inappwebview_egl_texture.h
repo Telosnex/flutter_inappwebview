@@ -3,6 +3,8 @@
 
 #include <flutter_linux/flutter_linux.h>
 
+#include <memory>
+
 G_BEGIN_DECLS
 
 /**
@@ -54,8 +56,11 @@ InAppWebViewEGLTexture* inappwebview_egl_texture_new(
  * @param width The image width.
  * @param height The image height.
  */
+// Sets the frame to show next: an EGL image from
+// InAppWebView::GetCurrentEglImage, or null to use the pixel buffer. The
+// texture holds the frame it bound until it binds another (C11).
 void inappwebview_egl_texture_set_egl_image(InAppWebViewEGLTexture* self,
-                                            void* egl_image,
+                                            std::shared_ptr<void> egl_image,
                                             uint32_t width,
                                             uint32_t height);
 

@@ -1,5 +1,7 @@
 #include "inappwebview_egl_texture.h"
 
+#include <new>
+
 #include <epoxy/egl.h>
 #include <epoxy/gl.h>
 
@@ -43,8 +45,12 @@ struct _InAppWebViewEGLTexture {
   uint32_t texture_width;   // Current texture dimensions
   uint32_t texture_height;
 
-  // Current EGL image (weak reference - owned by WPE)
-  void* current_egl_image;  // EGLImageKHR
+  // Next frame to bind and the frame bound now (EGLImageKHR in .get()).
+  // Placement-constructed in init, destroyed in finalize. Holding the bound
+  // frame keeps its image valid and its buffer away from WPE while the GPU
+  // may sample it (C11).
+  std::shared_ptr<void> current_egl_image;
+  std::shared_ptr<void> bound_egl_image;
   uint32_t width;
   uint32_t height;
   gboolean has_new_frame;
@@ -143,6 +149,7 @@ static gboolean inappwebview_egl_texture_populate(FlTextureGL* texture, uint32_t
   // Use the EGL image that was set via inappwebview_egl_texture_set_egl_image()
   // This is updated by the on_frame_available callback before Flutter is notified
   if (self->current_egl_image != nullptr && self->width > 0 && self->height > 0) {
+    std::shared_ptr<void> frame = self->current_egl_image;
     // Check if EGL image extension is available
     if (check_egl_image_extension(self)) {
       // Create texture if needed
@@ -154,7 +161,7 @@ static gboolean inappwebview_egl_texture_populate(FlTextureGL* texture, uint32_t
       // Bind the EGL image to our texture - ZERO-COPY!
       glBindTexture(GL_TEXTURE_2D, self->texture_id);
       self->glEGLImageTargetTexture2DOES(GL_TEXTURE_2D,
-                                         static_cast<GLeglImageOES>(self->current_egl_image));
+                                         static_cast<GLeglImageOES>(frame.get()));
 
       // Set texture parameters
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -175,7 +182,12 @@ static gboolean inappwebview_egl_texture_populate(FlTextureGL* texture, uint32_t
       
       self->has_new_frame = FALSE;
 
+      // Keep the bound frame; the previous one can go back to WPE.
+      std::shared_ptr<void> previous = std::move(self->bound_egl_image);
+      self->bound_egl_image = std::move(frame);
+
       g_mutex_unlock(&self->mutex);
+      previous.reset();
       return TRUE;
     }
   }
@@ -214,8 +226,11 @@ static gboolean inappwebview_egl_texture_populate(FlTextureGL* texture, uint32_t
           // Upload pixel data to texture
           glBindTexture(GL_TEXTURE_2D, self->texture_id);
           
-          // Use glTexSubImage2D if size hasn't changed, otherwise glTexImage2D
-          if (self->texture_width == buf_width && self->texture_height == buf_height) {
+          // Use glTexSubImage2D if size hasn't changed, otherwise glTexImage2D.
+          // A texture bound to an EGL image is respecified, not written into.
+          const bool was_egl = self->bound_egl_image != nullptr;
+          if (!was_egl && self->texture_width == buf_width &&
+              self->texture_height == buf_height) {
             glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, buf_width, buf_height,
                             GL_RGBA, GL_UNSIGNED_BYTE, self->fallback_buffer);
           } else {
@@ -237,7 +252,9 @@ static gboolean inappwebview_egl_texture_populate(FlTextureGL* texture, uint32_t
           *out_width = buf_width;
           *out_height = buf_height;
 
+          std::shared_ptr<void> previous = std::move(self->bound_egl_image);
           g_mutex_unlock(&self->mutex);
+          previous.reset();
           return TRUE;
         }
       }
@@ -285,17 +302,28 @@ static void inappwebview_egl_texture_dispose(GObject* object) {
   self->texture_height = 0;
   self->default_texture_id = 0;
   self->default_texture_initialized = FALSE;
-  self->current_egl_image = nullptr;
+  std::shared_ptr<void> pending = std::move(self->current_egl_image);
+  std::shared_ptr<void> bound = std::move(self->bound_egl_image);
 
   g_mutex_unlock(&self->mutex);
-  g_mutex_clear(&self->mutex);
+  pending.reset();
+  bound.reset();
 
   G_OBJECT_CLASS(inappwebview_egl_texture_parent_class)->dispose(object);
+}
+
+static void inappwebview_egl_texture_finalize(GObject* object) {
+  InAppWebViewEGLTexture* self = INAPPWEBVIEW_EGL_TEXTURE(object);
+  self->current_egl_image.~shared_ptr();
+  self->bound_egl_image.~shared_ptr();
+  g_mutex_clear(&self->mutex);
+  G_OBJECT_CLASS(inappwebview_egl_texture_parent_class)->finalize(object);
 }
 
 static void inappwebview_egl_texture_class_init(InAppWebViewEGLTextureClass* klass) {
   FL_TEXTURE_GL_CLASS(klass)->populate = inappwebview_egl_texture_populate;
   G_OBJECT_CLASS(klass)->dispose = inappwebview_egl_texture_dispose;
+  G_OBJECT_CLASS(klass)->finalize = inappwebview_egl_texture_finalize;
 }
 
 static void inappwebview_egl_texture_init(InAppWebViewEGLTexture* self) {
@@ -304,7 +332,8 @@ static void inappwebview_egl_texture_init(InAppWebViewEGLTexture* self) {
   self->texture_initialized = FALSE;
   self->texture_width = 0;
   self->texture_height = 0;
-  self->current_egl_image = nullptr;
+  new (&self->current_egl_image) std::shared_ptr<void>();
+  new (&self->bound_egl_image) std::shared_ptr<void>();
   self->width = 0;
   self->height = 0;
   self->has_new_frame = FALSE;
@@ -327,7 +356,8 @@ InAppWebViewEGLTexture* inappwebview_egl_texture_new(
   return self;
 }
 
-void inappwebview_egl_texture_set_egl_image(InAppWebViewEGLTexture* self, void* egl_image,
+void inappwebview_egl_texture_set_egl_image(InAppWebViewEGLTexture* self,
+                                            std::shared_ptr<void> egl_image,
                                             uint32_t width, uint32_t height) {
   if (self == nullptr) {
     return;
@@ -335,7 +365,8 @@ void inappwebview_egl_texture_set_egl_image(InAppWebViewEGLTexture* self, void* 
 
   g_mutex_lock(&self->mutex);
 
-  self->current_egl_image = egl_image;
+  // A frame replaced before it was bound is dropped after the unlock.
+  std::swap(self->current_egl_image, egl_image);
   self->width = width;
   self->height = height;
   self->has_new_frame = TRUE;

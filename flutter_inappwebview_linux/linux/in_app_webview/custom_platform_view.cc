@@ -143,10 +143,11 @@ CustomPlatformView::CustomPlatformView(FlBinaryMessenger* messenger,
     if (egl_texture_ != nullptr && webview_ != nullptr) {
       uint32_t width = 0;
       uint32_t height = 0;
-      void* egl_image = webview_->GetCurrentEglImage(&width, &height);
-      if (egl_image != nullptr) {
-        inappwebview_egl_texture_set_egl_image(egl_texture_, egl_image, width, height);
-      }
+      // Also when null: after a fall back to copied pixels the texture
+      // must stop binding the old image (C11).
+      inappwebview_egl_texture_set_egl_image(
+          egl_texture_, webview_->GetCurrentEglImage(&width, &height), width,
+          height);
     }
     MarkTextureFrameAvailable();
   });

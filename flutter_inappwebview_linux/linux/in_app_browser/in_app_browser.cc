@@ -1215,7 +1215,10 @@ gboolean InAppBrowser::OnGlAreaRender(GtkGLArea* area, GdkGLContext* context,
 
   // Try to get EGL image for zero-copy rendering
   uint32_t imgWidth = 0, imgHeight = 0;
-  void* eglImage = browser->webView_->GetCurrentEglImage(&imgWidth, &imgHeight);
+  // Held for the draw: the image stays valid until it returns (C11).
+  std::shared_ptr<void> eglFrame =
+      browser->webView_->GetCurrentEglImage(&imgWidth, &imgHeight);
+  void* eglImage = eglFrame.get();
 
   if (eglImage != nullptr && imgWidth > 0 && imgHeight > 0) {
     // Get the glEGLImageTargetTexture2DOES function

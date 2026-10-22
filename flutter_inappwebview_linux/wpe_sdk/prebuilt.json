@@ -1,13 +1,13 @@
 {
   "schema": 1,
-  "key": "1b871c34cc89af01e1de9b3dde4900ee8256356de22ea6b3ce4c260579860a2f",
-  "tag": "wpe-sdk-1b871c34cc89af01",
+  "key": "6cd4b3e2d2540fc605bb3de188788354270dccce02dd0539d3e4cb077a9a65b4",
+  "tag": "wpe-sdk-6cd4b3e2d2540fc6",
   "targets": {
     "debian-13-arm64": {
       "target": "debian-13-arm64",
       "archive": "wpe-sdk-debian-13-arm64.tar.zst",
-      "sha256": "4e26b585d67164883db49c1101fe5af563786b5ec2e3274ef338edcabe7029a4",
-      "bytes": 46013168,
+      "sha256": "e7c0bca77eb2e5da406d17d75619a1db4b657f14a94f4d63528432bb610e6490",
+      "bytes": 45898975,
       "buildPrefix": "/opt/wpe-sdk",
       "libwpe": "1.16.3",
       "wpebackendFdo": "1.16.1",
@@ -108,13 +108,13 @@
         "xdg-dbus-proxy",
         "zlib1g"
       ],
-      "url": "https://github.com/Telosnex/flutter_inappwebview/releases/download/wpe-sdk-1b871c34cc89af01/wpe-sdk-debian-13-arm64.tar.zst"
+      "url": "https://github.com/Telosnex/flutter_inappwebview/releases/download/wpe-sdk-6cd4b3e2d2540fc6/wpe-sdk-debian-13-arm64.tar.zst"
     },
     "ubuntu-26.04-arm64": {
       "target": "ubuntu-26.04-arm64",
       "archive": "wpe-sdk-ubuntu-26.04-arm64.tar.zst",
-      "sha256": "2ceafc2fb8cdc569c713aead13ff1bd569d8e4d82cdf7a2d40659c3a561e9089",
-      "bytes": 48732503,
+      "sha256": "e06d4f0d5cfcd408fa066b90e26e98c211c083d2d0d4e5a5fee5e44c19cebc70",
+      "bytes": 48759990,
       "buildPrefix": "/opt/wpe-sdk",
       "libwpe": "1.16.3",
       "wpebackendFdo": "1.16.1",
@@ -211,13 +211,13 @@
         "xdg-dbus-proxy",
         "zlib1g"
       ],
-      "url": "https://github.com/Telosnex/flutter_inappwebview/releases/download/wpe-sdk-1b871c34cc89af01/wpe-sdk-ubuntu-26.04-arm64.tar.zst"
+      "url": "https://github.com/Telosnex/flutter_inappwebview/releases/download/wpe-sdk-6cd4b3e2d2540fc6/wpe-sdk-ubuntu-26.04-arm64.tar.zst"
     },
     "ubuntu-26.04-x64": {
       "target": "ubuntu-26.04-x64",
       "archive": "wpe-sdk-ubuntu-26.04-x64.tar.zst",
-      "sha256": "ff6cdeb5ace1cd51f7f045bc4e715fd3652cf679b16289972d8b9c9c9b5d8d6a",
-      "bytes": 48431061,
+      "sha256": "3b875f935cfe9cf106897ae2559366d9bb07d87fcd647b07da6ef35602cdbb5c",
+      "bytes": 48433294,
       "buildPrefix": "/opt/wpe-sdk",
       "libwpe": "1.16.3",
       "wpebackendFdo": "1.16.1",
@@ -314,7 +314,7 @@
         "xdg-dbus-proxy",
         "zlib1g"
       ],
-      "url": "https://github.com/Telosnex/flutter_inappwebview/releases/download/wpe-sdk-1b871c34cc89af01/wpe-sdk-ubuntu-26.04-x64.tar.zst"
+      "url": "https://github.com/Telosnex/flutter_inappwebview/releases/download/wpe-sdk-6cd4b3e2d2540fc6/wpe-sdk-ubuntu-26.04-x64.tar.zst"
     }
   }
 }

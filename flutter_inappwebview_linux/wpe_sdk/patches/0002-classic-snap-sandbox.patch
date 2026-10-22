@@ -5,6 +5,8 @@ Telosnex: keep WebKit's bubblewrap sandbox for a bundled app.
   xdg-dbus-proxy (used when the file is there).
 - WEBKIT_SANDBOX_RO_PATHS: colon-separated folders mounted read-only in
   the sandbox (the app's libraries and dynamic linker outside /usr).
+- WEBKIT_TLS_CAFILE_PEM in release builds too: the host's CA bundle when
+  it is not at the build distro's path (openSUSE).
 
 diff --git a/Source/WTF/wtf/glib/Sandbox.cpp b/Source/WTF/wtf/glib/Sandbox.cpp
 index 6ad1020..2acedc0 100644
@@ -112,6 +114,21 @@ index 73ac83a..a6e808a 100644
  using WTF::shouldUseBubblewrap;
  using WTF::shouldUsePortal;
  using WTF::checkFlatpakPortalVersion;
+diff --git a/Source/WebCore/platform/network/soup/SoupNetworkSession.cpp b/Source/WebCore/platform/network/soup/SoupNetworkSession.cpp
+index 2e65bfb..79133f9 100644
+--- a/Source/WebCore/platform/network/soup/SoupNetworkSession.cpp
++++ b/Source/WebCore/platform/network/soup/SoupNetworkSession.cpp
+@@ -129,7 +129,9 @@ SoupNetworkSession::SoupNetworkSession(PAL::SessionID sessionID)
+     if (soup_auth_negotiate_supported() && !m_sessionID.isEphemeral())
+         soup_session_add_feature_by_type(m_soupSession.get(), SOUP_TYPE_AUTH_NEGOTIATE);
+ 
+-#if ENABLE(DEVELOPER_MODE)
++    // Telosnex: a bundled app's GnuTLS knows only its build distro's CA
++    // path (Debian's); the launcher names the host's bundle.
++#if 1
+     // Optionally load a custom path with the TLS CAFile. This is used on the GTK/WPE bundles. See script generate-bundle
+     // Don't enable this outside DEVELOPER_MODE because using a non-default TLS database has surprising undesired effects
+     // on how certificate verification is performed. See https://webkit.org/b/237107#c14 and git commit 82999879b on glib
 diff --git a/Source/WebKit/UIProcess/Launcher/glib/BubblewrapLauncher.cpp b/Source/WebKit/UIProcess/Launcher/glib/BubblewrapLauncher.cpp
 index 24b691e..cf00c63 100644
 --- a/Source/WebKit/UIProcess/Launcher/glib/BubblewrapLauncher.cpp

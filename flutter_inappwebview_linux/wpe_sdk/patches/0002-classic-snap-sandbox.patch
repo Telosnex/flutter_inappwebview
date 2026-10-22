@@ -1,10 +1,13 @@
-Telosnex: in a classic Snap, keep the bubblewrap sandbox. WebKit treats any
-Snap as confined and turns its sandbox off; a classic Snap is unconfined.
-Uses the Snap's bwrap and xdg-dbus-proxy and mounts the Snap and core26
-in the sandbox.
+Telosnex: keep WebKit's bubblewrap sandbox for a bundled app.
+- A classic Snap is unconfined: isInsideSnap() is false there (confinement
+  from $SNAP/meta/snap.yaml), so WebKit sandboxes itself.
+- WEBKIT_SANDBOX_HELPERS_DIR: folder of the bundled bwrap and
+  xdg-dbus-proxy (used when the file is there).
+- WEBKIT_SANDBOX_RO_PATHS: colon-separated folders mounted read-only in
+  the sandbox (the app's libraries and dynamic linker outside /usr).
 
 diff --git a/Source/WTF/wtf/glib/Sandbox.cpp b/Source/WTF/wtf/glib/Sandbox.cpp
-index 6ad1020..ed9756e 100644
+index 6ad1020..2acedc0 100644
 --- a/Source/WTF/wtf/glib/Sandbox.cpp
 +++ b/Source/WTF/wtf/glib/Sandbox.cpp
 @@ -30,6 +30,7 @@
@@ -26,7 +29,7 @@ index 6ad1020..ed9756e 100644
              "--ro-bind", "/", "/",
              "--proc", "/proc",
              "--dev", "/dev",
-@@ -71,15 +73,49 @@ bool isInsideUnsupportedContainer()
+@@ -71,15 +73,51 @@ bool isInsideUnsupportedContainer()
  }
  #endif
  
@@ -64,12 +67,14 @@ index 6ad1020..ed9756e 100644
  
 +CString sandboxHelperPath(const char* path)
 +{
-+    // Telosnex: in a classic Snap the helpers (bwrap, xdg-dbus-proxy) are in
-+    // the Snap; the host may not have them.
-+    if (isInsideClassicSnap()) {
-+        GUniquePtr<char> inSnap(g_build_filename(g_getenv("SNAP"), path, nullptr));
-+        if (g_file_test(inSnap.get(), G_FILE_TEST_IS_EXECUTABLE))
-+            return CString(inSnap.get());
++    // Telosnex: an app that bundles bwrap and xdg-dbus-proxy (a classic
++    // Snap, a package under /opt) names their folder; the host may not have
++    // them.
++    if (const char* dir = g_getenv("WEBKIT_SANDBOX_HELPERS_DIR")) {
++        GUniquePtr<char> basename(g_path_get_basename(path));
++        GUniquePtr<char> bundled(g_build_filename(dir, basename.get(), nullptr));
++        if (g_file_test(bundled.get(), G_FILE_TEST_IS_EXECUTABLE))
++            return CString(bundled.get());
 +    }
 +    return CString(path);
 +}
@@ -108,22 +113,22 @@ index 73ac83a..a6e808a 100644
  using WTF::shouldUsePortal;
  using WTF::checkFlatpakPortalVersion;
 diff --git a/Source/WebKit/UIProcess/Launcher/glib/BubblewrapLauncher.cpp b/Source/WebKit/UIProcess/Launcher/glib/BubblewrapLauncher.cpp
-index 24b691e..7bff543 100644
+index 24b691e..cf00c63 100644
 --- a/Source/WebKit/UIProcess/Launcher/glib/BubblewrapLauncher.cpp
 +++ b/Source/WebKit/UIProcess/Launcher/glib/BubblewrapLauncher.cpp
 @@ -865,11 +865,23 @@ GRefPtr<GSubprocess> bubblewrapSpawn(GSubprocessLauncher* launcher, const Proces
          sandboxArgs.append("--unshare-pid");
      }
  
-+    // Telosnex: in a classic Snap the helper processes and their libraries
-+    // are in the Snap, and the dynamic linker and C library in its base.
-+    // Each ELF file names /snap/core26/current/... as its interpreter.
-+    if (isInsideClassicSnap()) {
-+        GUniquePtr<char> snapDir(g_build_filename("/snap", g_getenv("SNAP_NAME"), nullptr));
-+        sandboxArgs.appendList<CString>({
-+            "--ro-bind", snapDir.get(), snapDir.get(),
-+            "--ro-bind-try", "/snap/core26", "/snap/core26",
-+        });
++    // Telosnex: an app that bundles its libraries and dynamic linker outside
++    // /usr (a classic Snap and its base, a package under /opt) lists those
++    // folders, colon-separated. Read-only.
++    if (const char* paths = g_getenv("WEBKIT_SANDBOX_RO_PATHS")) {
++        GUniquePtr<char*> list(g_strsplit(paths, ":", -1));
++        for (char** path = list.get(); *path; ++path) {
++            if (**path == '/')
++                sandboxArgs.appendList<CString>({ "--ro-bind-try", *path, *path });
++        }
 +    }
 +
      addExtraPaths(launchOptions.extraSandboxPaths, sandboxArgs);

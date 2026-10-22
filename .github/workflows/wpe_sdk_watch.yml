@@ -1,0 +1,34 @@
+# Daily: is the pinned WPE WebKit (wpe_sdk/sources.env) behind the newest
+# stable release or the newest security advisory? If so the run fails, and
+# keeps failing daily until the pin moves. GitHub emails a failed scheduled
+# run to whoever last changed this file. Telosnex ships this WebKit in its
+# Linux packages, so security releases are ours to ship.
+name: WPE SDK security watch
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Check upstream
+        id: check
+        run: |
+          python3 flutter_inappwebview_linux/wpe_sdk/watch/test_check.py
+          out=$(python3 flutter_inappwebview_linux/wpe_sdk/watch/check.py flutter_inappwebview_linux/wpe_sdk/sources.env)
+          echo "$out"
+          echo "json=$out" >> "$GITHUB_OUTPUT"
+      - name: Fail when behind
+        if: fromJSON(steps.check.outputs.json).behind
+        env:
+          RESULT: ${{ steps.check.outputs.json }}
+        run: |
+          msg=$(jq -r '"Pinned WPE WebKit \(.pinned) is behind: \(.reason). Newest advisory \(.advisory). Fast path: bump wpe_sdk/sources.env, push to wpe-sdk-release, merge the manifest branch, release Telosnex for Linux."' <<<"$RESULT")
+          echo "::error title=WPE WebKit update needed::$msg"
+          echo "$msg" >> "$GITHUB_STEP_SUMMARY"
+          exit 1

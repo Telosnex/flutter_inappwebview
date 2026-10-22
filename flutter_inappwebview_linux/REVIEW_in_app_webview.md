@@ -183,7 +183,7 @@ Found by reading. No test, because the result is hard to observe from Dart, or b
 - `wpe_fdo_initialize_for_egl_display` and `eglInitialize` run once per view.
 - `GetDmaBufFd` always returns false.
 - `loadData` and the other load methods log "called while loading" on every call, also when idle.
-- `WebStorageManager::removeDataModifiedSince` passes the Unix timestamp in seconds as the `GTimeSpan` of `webkit_website_data_manager_clear`. WebKit reads it as "modified in the last N microseconds", with 0 meaning all data. Only timestamp 0 works; a recent date clears almost nothing. Found 2026-10-20 (Telosnex app_storage ADR 001, A2); not fixed.
+- `WebStorageManager::removeDataModifiedSince` passes the Unix timestamp in seconds as the `GTimeSpan` of `webkit_website_data_manager_clear`. WebKit reads it as "modified in the last N microseconds", with 0 meaning all data. Only timestamp 0 works; a recent date clears almost nothing. Found 2026-10-20 (Telosnex app_storage ADR 001, A2). Fixed 2026-10-21 in b73ae6cd7 (converts the date to a span back from now); integration test `date: keeps data older than it, removes newer` now runs on Linux and passed on the Ubuntu 26.04 VM 2026-10-22.
 
 ### Comments that are wrong
 

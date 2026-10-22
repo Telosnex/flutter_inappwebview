@@ -83,8 +83,7 @@ void removeDataModifiedSince() {
     );
   });
 
-  // Linux treats the date as a time span (fork REVIEW_in_app_webview.md),
-  // so this runs on Windows only for now.
+  // Windows and Linux (WPE: the date becomes a span back from now).
   skippableTestWidgets('date: keeps data older than it, removes newer', (
     WidgetTester tester,
   ) async {
@@ -107,5 +106,6 @@ void removeDataModifiedSince() {
     expect(after['local'], isNull);
     // Only local storage was requested.
     expect(after['indexedDb'], isTrue);
-  }, skip: defaultTargetPlatform != TargetPlatform.windows);
+  }, skip: defaultTargetPlatform != TargetPlatform.windows &&
+      defaultTargetPlatform != TargetPlatform.linux);
 }

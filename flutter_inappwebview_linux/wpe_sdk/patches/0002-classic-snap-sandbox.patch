@@ -1,0 +1,160 @@
+Telosnex: in a classic Snap, keep the bubblewrap sandbox. WebKit treats any
+Snap as confined and turns its sandbox off; a classic Snap is unconfined.
+Uses the Snap's bwrap and xdg-dbus-proxy and mounts the Snap and core26
+in the sandbox.
+
+diff --git a/Source/WTF/wtf/glib/Sandbox.cpp b/Source/WTF/wtf/glib/Sandbox.cpp
+index 6ad1020..ed9756e 100644
+--- a/Source/WTF/wtf/glib/Sandbox.cpp
++++ b/Source/WTF/wtf/glib/Sandbox.cpp
+@@ -30,6 +30,7 @@
+ #include <wtf/FileSystem.h>
+ #include <wtf/NeverDestroyed.h>
+ #include <wtf/glib/GRefPtr.h>
++#include <wtf/glib/GUniquePtr.h>
+ #include <wtf/text/CString.h>
+ 
+ namespace WTF {
+@@ -50,8 +51,9 @@ bool isInsideUnsupportedContainer()
+     // docker vs podman, which permissions are given, is it privileged or unprivileged, and are unprivileged user namespaces enabled.
+     // So this just does a basic test of if `bwrap` runs successfully.
+     if (inContainer && supportedContainer == -1) {
++        CString bwrap = sandboxHelperPath(BWRAP_EXECUTABLE);
+         const char* bwrapArgs[] = {
+-            BWRAP_EXECUTABLE,
++            bwrap.data(),
+             "--ro-bind", "/", "/",
+             "--proc", "/proc",
+             "--dev", "/dev",
+@@ -71,15 +73,49 @@ bool isInsideUnsupportedContainer()
+ }
+ #endif
+ 
++bool isInsideClassicSnap()
++{
++    // Telosnex: a classic Snap runs unconfined, like a native package, so
++    // WebKit's own sandbox is wanted. snap.yaml is the check GLib uses.
++    static bool returnValue = []() -> bool {
++        const char* snap = g_getenv("SNAP");
++        if (!snap || !g_getenv("SNAP_NAME") || !g_getenv("SNAP_REVISION"))
++            return false;
++        GUniquePtr<char> path(g_build_filename(snap, "meta", "snap.yaml", nullptr));
++        GUniqueOutPtr<char> contents;
++        if (!g_file_get_contents(path.get(), &contents.outPtr(), nullptr, nullptr))
++            return false;
++        GUniquePtr<char*> lines(g_strsplit(contents.get(), "\n", -1));
++        for (char** line = lines.get(); *line; ++line) {
++            if (g_str_has_prefix(*line, "confinement:"))
++                return !g_strcmp0(g_strstrip(*line + sizeof("confinement:") - 1), "classic");
++        }
++        return false;
++    }();
++    return returnValue;
++}
++
+ bool isInsideSnap()
+ {
+     // The "SNAP" environment variable is not unlikely to be set for/by something other
+     // than Snap, so check a couple of additional variables to avoid false positives.
+     // See: https://snapcraft.io/docs/environment-variables
+-    static bool returnValue = g_getenv("SNAP") && g_getenv("SNAP_NAME") && g_getenv("SNAP_REVISION");
++    static bool returnValue = g_getenv("SNAP") && g_getenv("SNAP_NAME") && g_getenv("SNAP_REVISION") && !isInsideClassicSnap();
+     return returnValue;
+ }
+ 
++CString sandboxHelperPath(const char* path)
++{
++    // Telosnex: in a classic Snap the helpers (bwrap, xdg-dbus-proxy) are in
++    // the Snap; the host may not have them.
++    if (isInsideClassicSnap()) {
++        GUniquePtr<char> inSnap(g_build_filename(g_getenv("SNAP"), path, nullptr));
++        if (g_file_test(inSnap.get(), G_FILE_TEST_IS_EXECUTABLE))
++            return CString(inSnap.get());
++    }
++    return CString(path);
++}
++
+ bool shouldUseBubblewrap()
+ {
+ #if ENABLE(BUBBLEWRAP_SANDBOX)
+diff --git a/Source/WTF/wtf/glib/Sandbox.h b/Source/WTF/wtf/glib/Sandbox.h
+index 73ac83a..a6e808a 100644
+--- a/Source/WTF/wtf/glib/Sandbox.h
++++ b/Source/WTF/wtf/glib/Sandbox.h
+@@ -19,6 +19,7 @@
+ 
+ #pragma once
+ 
++#include <wtf/text/CString.h>
+ #include <wtf/text/WTFString.h>
+ 
+ namespace WTF {
+@@ -26,6 +27,8 @@ namespace WTF {
+ WTF_EXPORT_PRIVATE bool isInsideFlatpak();
+ WTF_EXPORT_PRIVATE bool isInsideUnsupportedContainer();
+ WTF_EXPORT_PRIVATE bool isInsideSnap();
++WTF_EXPORT_PRIVATE bool isInsideClassicSnap();
++WTF_EXPORT_PRIVATE CString sandboxHelperPath(const char*);
+ WTF_EXPORT_PRIVATE bool shouldUseBubblewrap();
+ WTF_EXPORT_PRIVATE bool shouldUsePortal();
+ WTF_EXPORT_PRIVATE bool checkFlatpakPortalVersion(int);
+@@ -37,6 +40,8 @@ WTF_EXPORT_PRIVATE const CString& sandboxedUserRuntimeDirectory();
+ using WTF::isInsideFlatpak;
+ using WTF::isInsideUnsupportedContainer;
+ using WTF::isInsideSnap;
++using WTF::isInsideClassicSnap;
++using WTF::sandboxHelperPath;
+ using WTF::shouldUseBubblewrap;
+ using WTF::shouldUsePortal;
+ using WTF::checkFlatpakPortalVersion;
+diff --git a/Source/WebKit/UIProcess/Launcher/glib/BubblewrapLauncher.cpp b/Source/WebKit/UIProcess/Launcher/glib/BubblewrapLauncher.cpp
+index 24b691e..7bff543 100644
+--- a/Source/WebKit/UIProcess/Launcher/glib/BubblewrapLauncher.cpp
++++ b/Source/WebKit/UIProcess/Launcher/glib/BubblewrapLauncher.cpp
+@@ -865,11 +865,23 @@ GRefPtr<GSubprocess> bubblewrapSpawn(GSubprocessLauncher* launcher, const Proces
+         sandboxArgs.append("--unshare-pid");
+     }
+ 
++    // Telosnex: in a classic Snap the helper processes and their libraries
++    // are in the Snap, and the dynamic linker and C library in its base.
++    // Each ELF file names /snap/core26/current/... as its interpreter.
++    if (isInsideClassicSnap()) {
++        GUniquePtr<char> snapDir(g_build_filename("/snap", g_getenv("SNAP_NAME"), nullptr));
++        sandboxArgs.appendList<CString>({
++            "--ro-bind", snapDir.get(), snapDir.get(),
++            "--ro-bind-try", "/snap/core26", "/snap/core26",
++        });
++    }
++
+     addExtraPaths(launchOptions.extraSandboxPaths, sandboxArgs);
+ 
+     if (launchOptions.processType == ProcessLauncher::ProcessType::DBusProxy) {
++        CString dbusProxy = sandboxHelperPath(DBUS_PROXY_EXECUTABLE);
+         sandboxArgs.appendList<CString>({
+-            "--ro-bind", DBUS_PROXY_EXECUTABLE, DBUS_PROXY_EXECUTABLE,
++            "--ro-bind", dbusProxy, dbusProxy,
+             "--bind", sandboxedUserRuntimeDirectory(), sandboxedUserRuntimeDirectory(),
+         });
+ 
+@@ -1004,7 +1016,7 @@ GRefPtr<GSubprocess> bubblewrapSpawn(GSubprocessLauncher* launcher, const Proces
+     g_subprocess_launcher_take_fd(launcher, bwrapFd, bwrapFd);
+ 
+     Vector<CString> bwrapArgs = {
+-        BWRAP_EXECUTABLE,
++        sandboxHelperPath(BWRAP_EXECUTABLE),
+         "--args",
+         bwrapFdStr.get(),
+         "--",
+diff --git a/Source/WebKit/UIProcess/Launcher/glib/XDGDBusProxy.cpp b/Source/WebKit/UIProcess/Launcher/glib/XDGDBusProxy.cpp
+index 51a7e92..b9ab475 100644
+--- a/Source/WebKit/UIProcess/Launcher/glib/XDGDBusProxy.cpp
++++ b/Source/WebKit/UIProcess/Launcher/glib/XDGDBusProxy.cpp
+@@ -195,7 +195,7 @@ void XDGDBusProxy::launch(const ProcessLaunchOptions& webProcessLaunchOptions)
+     int proxyFd = argumentsToFileDescriptor(proxyArgs, "dbus-proxy");
+     GUniquePtr<char> proxyArgsStr(g_strdup_printf("--args=%d", proxyFd));
+     Vector<CString> args = {
+-        DBUS_PROXY_EXECUTABLE,
++        sandboxHelperPath(DBUS_PROXY_EXECUTABLE),
+         proxyArgsStr.get(),
+     };
+     auto argv = args.map([](auto& arg) {

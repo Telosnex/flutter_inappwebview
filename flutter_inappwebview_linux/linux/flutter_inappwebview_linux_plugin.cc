@@ -81,6 +81,13 @@ void flutter_inappwebview_linux_plugin_register_with_registrar(FlPluginRegistrar
   // after WebProcess starts has no effect.
   flutter_inappwebview_plugin::ApplySoftwareRenderingIfNeeded();
 
+  // Keep cookies across restarts. WebKit's default network session stores
+  // local storage, IndexedDB and caches under its data directory, but keeps
+  // cookies in memory unless told where to save them. Set this before any
+  // WebView loads a page. Incognito WebViews use their own ephemeral
+  // session and are not affected.
+  flutter_inappwebview_plugin::EnablePersistentCookies();
+
   FlutterInappwebviewLinuxPlugin* plugin = FLUTTER_INAPPWEBVIEW_LINUX_PLUGIN(
       g_object_new(flutter_inappwebview_linux_plugin_get_type(), nullptr));
 

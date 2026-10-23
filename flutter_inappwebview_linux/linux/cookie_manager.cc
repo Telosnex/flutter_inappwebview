@@ -151,6 +151,31 @@ FlValue* Cookie::toFlValue() const {
   });
 }
 
+// === Persistent cookie storage ===
+
+void EnablePersistentCookies() {
+  WebKitNetworkSession* session = webkit_network_session_get_default();
+  if (session == nullptr || webkit_network_session_is_ephemeral(session)) {
+    return;
+  }
+  WebKitWebsiteDataManager* data_manager =
+      webkit_network_session_get_website_data_manager(session);
+  const char* base = data_manager != nullptr
+                         ? webkit_website_data_manager_get_base_data_directory(data_manager)
+                         : nullptr;
+  if (base == nullptr) {
+    errorLog("CookieManager: no base data directory; cookies stay in memory");
+    return;
+  }
+  g_mkdir_with_parents(base, 0700);
+  gchar* path = g_build_filename(base, "cookies.sqlite", nullptr);
+  webkit_cookie_manager_set_persistent_storage(
+      webkit_network_session_get_cookie_manager(session), path,
+      WEBKIT_COOKIE_PERSISTENT_STORAGE_SQLITE);
+  debugLog(std::string("CookieManager: persistent cookies at ") + path);
+  g_free(path);
+}
+
 // === CookieManager ===
 
 CookieManager::CookieManager(PluginInstance* plugin)

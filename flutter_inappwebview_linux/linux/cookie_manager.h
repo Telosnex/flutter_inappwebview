@@ -14,6 +14,11 @@
 
 namespace flutter_inappwebview_plugin {
 
+// Saves the default network session's cookies to `cookies.sqlite` in its
+// base data directory (by default `$XDG_DATA_HOME/<prgname>`). Without this,
+// WebKit keeps them in memory only and logins are lost on restart.
+void EnablePersistentCookies();
+
 class PluginInstance;
 
 /**
